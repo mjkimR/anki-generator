@@ -1,0 +1,20 @@
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# IDE configs
+.idea/
+.vscode/
+
+# Local databases (Source of Truth)
+*.db
+*.db-journal
+
+# Compiled / local skill assets & temp files
+.agents/
+media/
+temp_card.json
+
+# Local environment configs
+.env
