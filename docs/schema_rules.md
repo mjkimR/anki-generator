@@ -1,0 +1,90 @@
+# Card Generation & Schema Rules
+
+To ensure a clean database and prevent formatting issues, any generated cards must adhere to the rules outlined in this document. These parameters are directly checked by the system validator before entries are exported.
+
+---
+
+## 📊 JSON Output Schema
+
+Cards must be packaged inside a root `"cards"` array. An individual card node has the following structure with valid sample data:
+
+```json
+{
+  "cards": [
+    {
+      "front": "緊迫した交渉の場において、彼は決断を<span style='color:blue'><b>躊躇った</b></span>。",
+      "back": "緊迫した交渉の場において、彼は決断を躊躇った(ためらった)。<br><br>[뜻] 긴박한 협상 자리에서 그는 결단을 망설였다.<br><br>[Tip] '躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스이며, 주로 부정형이나 과거형으로 많이 쓰입니다.",
+      "target_word": "躊躇った",
+      "root_id": "躊躇う(ためらう)",
+      "pos": "동사(1그룹/자동사) - 활용 없음",
+      "components": [],
+      "collocations": [
+        "決断を躊躇う"
+      ],
+      "is_hyogai": false,
+      "tags": [
+        "비즈니스",
+        "N1",
+        "동사"
+      ],
+      "audio_path": ""
+    }
+  ]
+}
+```
+
+### Field Descriptions
+
+- **`front`** *(string, Japanese-only)*: The Japanese example sentence containing the target word wrapped in HTML tags: `<span style='color:blue'><b>[word]</b></span>`. Must contain strictly Japanese characters.
+- **`back`** *(string, Mixed)*: The card back content. Contains the sentence with readings/furigana, a `[뜻]` (meaning) section with Korean translation, and an optional `[Tip]` section explaining usage nuances.
+- **`target_word`** *(string, Japanese-only)*: The exact inflected form of the target word as it appears in the `front` sentence.
+- **`root_id`** *(string, Japanese-only)*: The dictionary base form serving as a unique card identifier, in the format `Kanji(Yomigana)` (e.g., `躊躇う(ためらう)`).
+- **`pos`** *(string)*: Part of speech, formatted strictly as `MainPOS(SubPOS) - GrammarTag`.
+- **`components`** *(array of strings, Japanese-only)*: If the card is an idiom (e.g., `腹を割る`), contains individual morpheme dictionary base forms (e.g. `["腹", "割る"]`). Empty for non-idioms.
+- **`collocations`** *(array of strings, Japanese-only)*: A list of common collocations (word pairings) featuring the target word.
+- **`is_hyogai`** *(boolean)*: True if the target word contains characters outside the standard Jōyō Kanji table.
+- **`tags`** *(array of strings)*: A list of tags for search and filtering.
+- **`audio_path`** *(string)*: File path to the synthesized speech audio file. Set to an empty string `""` initially and updated during the TTS step.
+
+---
+
+## 🏛️ Card Creation Rules
+
+### 1. Database Integrity & Routing
+- **De-duplication of Polysemes**: Do not list multiple meanings on a single card. For target words with distinct definitions, create multiple card objects in the array. This keeps review sessions focused.
+- **Idioms vs. Collocations**:
+  - **Idioms** (e.g., `腹を割る`, `水を差す`): Fixed expressions where words create a completely new meaning. Use the entire phrase as `root_id`. Provide individual morphemes in the `components` list (e.g. `["腹", "割る"]`).
+  - **Collocations** (e.g., `妥協点を見出す`, `責任を追及하는`): Regular associations where words keep their original meanings. Do not create an ID for the whole block. Set the main advanced word as the `root_id` and list related expressions in `collocations`.
+
+### 2. Sentence Engineering
+- **Conciseness**: Target sentences should be short (1–2 clauses, 40–50 characters max).
+- **Contextual Clues**: Write sentences where the target word cannot be easily replaced by generic synonyms. Use business-level contexts (negotiations, apologies, crisis management) to maximize semantic connection.
+- **Vividness**: Use high-polarity scenarios (e.g., intense protest, apologies) to help with retention.
+- **Contrastive Placement**: If possible, place similar-looking or sounding words together in the same sentence to emphasize usage differences.
+
+### 3. Morphological Formatting
+- **Root ID Format**: Must use the dictionary base form in the format `Kanji(Yomigana)` (e.g. `躊躇う(ためらう)`).
+- **Standard Orthography**: Follow standard Japanese Jōyō Kanji representations for Okurigana.
+- **Hyōgai Kanji (`is_hyogai`)**: If non-Joyo characters are used, set `is_hyogai: true`.
+
+### 4. POS (Part of Speech) Enum Restrictions
+The `pos` attribute must conform to: `MainPOS(SubPOS) - GrammarTag`
+- **Main POS**: `명사`, `동사`, `い형용사`, `나형용사`, `부사`, `접속사`, `연체사`, `관용구`
+- **Sub-POS**: `1그룹`, `2그룹`, `3그룹`, `자동사`, `타동사`, `대명사`, `고유명사`, `수사`, `조동사적명사`
+- **Grammar Tags**: `수동`, `사역`, `사역수동`, `가정`, `명령`, `존경어`, `겸양어`, `정중어`, `활용 없음`
+
+---
+
+## ⚠️ Language Isolation (CRITICAL)
+
+To prevent index pollution and font display issues, adhere to strict separation of Japanese and Korean contents:
+
+- **Japanese-Only Fields**:
+  - `front` (only exceptions are HTML tags: `<span style='color:blue'><b>...</b></span>`)
+  - `target_word`
+  - `root_id`
+  - `components`
+  - `collocations`
+  - **Must only contain Japanese Kanji (Shinjitai), Hiragana, and Katakana.** Ensure that Korean Hanja is never used (e.g. use `売` instead of `賣`, `圧` instead of `壓`).
+- **Korean-Only/Mixed Fields**:
+  - `back` (contains Yomigana, meaning translations, and tips in Korean).
