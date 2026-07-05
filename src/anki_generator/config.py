@@ -1,0 +1,23 @@
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
+
+# Project root directory
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Database path (Source of Truth)
+DB_PATH = PROJECT_ROOT / "anki_generator.db"
+
+# AnkiConnect configuration
+ANKI_CONNECT_URL = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
+ANKI_DEFAULT_DECK = os.getenv("ANKI_DEFAULT_DECK", "Japanese::Vocabulary")
+
+# TTS configuration
+TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
+
+# Temporary directory for media files
+MEDIA_DIR = PROJECT_ROOT / "media"
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
