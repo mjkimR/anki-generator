@@ -22,7 +22,7 @@ It takes Japanese words, inflections, or sentences, extracts high-value targets,
 
 ### Prerequisites
 
-1. **Python**: Ensure you have Python >= 3.14 installed.
+1. **Python**: Ensure you have Python >= 3.13 installed.
 2. **uv**: We recommend using `uv` for fast dependency management.
 3. **Anki Desktop**: Install Anki, and make sure the **AnkiConnect** add-on (ID: 2055492159) is installed and running on port `8765`.
 

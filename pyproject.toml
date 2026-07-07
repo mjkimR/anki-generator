@@ -3,13 +3,14 @@ name = "anki-generator"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "edge-tts>=6.1.12",
     "janome>=0.5.0",
     "requests>=2.31.0",
     "python-dotenv>=1.0.1",
-    "pydantic>=2.7.0"
+    "pydantic>=2.7.0",
+    "joyokanji>=1.1.0",
 ]
 
 [dependency-groups]
@@ -18,3 +19,7 @@ dev = [
     "ruff>=0.4.0",
     "pyright>=1.1.350"
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests bootstrap sys.path before importing the package under test.
+"tests/*" = ["E402"]
