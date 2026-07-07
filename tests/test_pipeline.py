@@ -31,6 +31,13 @@ def write_file(tmp_path, cards, name="妥協.json"):
     path.write_text(json.dumps({"cards": cards}, ensure_ascii=False), encoding="utf-8")
     return path
 
+def patch_backup(monkeypatch, tmp_path, branch="cards"):
+    """Points the auto-export at a temp dir and pins the branch so tests never
+    touch the real data/ partitions regardless of the repo's checked-out branch."""
+    monkeypatch.setattr(pipeline, "current_branch", lambda: branch)
+    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    return tmp_path / "data"
+
 def fake_tts_ok(monkeypatch):
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
                         lambda text, output_path=None, voice=None:
@@ -87,6 +94,7 @@ def test_valid_japanese_gates_on_korean(tmp_path):
 
 def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
+    data_dir = patch_backup(monkeypatch, tmp_path)
     fake_tts_ok(monkeypatch)
     fake_anki_online(monkeypatch)
     path = write_file(tmp_path, [make_japanese_card(back_meaning="타협", back_tip="뉘앙스 설명")])
@@ -96,6 +104,12 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     assert result["status"] == "done"
     assert result["synced_count"] == 1
     assert result["anki_online"] is True
+
+    # The JSONL backup is refreshed automatically and reflects the synced card.
+    assert len(result["backup"]["written"]) == 1
+    exported = json.loads(next(data_dir.glob("cards-*.jsonl")).read_text(encoding="utf-8"))
+    assert exported["root_id"] == "妥協(だきょう)"
+    assert exported["synced_to_anki"] == 1
 
     # DB-first persistence, then marked synced.
     conn = db_helper.get_connection(db)
@@ -110,6 +124,7 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
 
 def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
     fake_tts_ok(monkeypatch)
     fake_anki_offline(monkeypatch)
     path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
@@ -131,6 +146,18 @@ def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     assert result["status"] == "done"
     assert result["synced_count"] == 1
     assert db_helper.fetch_pending(db_path=db) == []
+
+def test_export_refused_on_main_branch(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path, branch="main")
+    fake_tts_ok(monkeypatch)
+    fake_anki_offline(monkeypatch)
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+
+    result, _ = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert result["backup"]["skipped"] is True
+    assert "main" in result["backup"]["reason"]
+    assert not (tmp_path / "data").exists()  # nothing written on main
 
 def test_gc_media_removes_only_unreferenced(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")

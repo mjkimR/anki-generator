@@ -11,7 +11,7 @@ current_file = Path(__file__).resolve()
 src_dir = current_file.parents[4]  # Path to the src/ directory
 sys.path.append(str(src_dir))
 
-from anki_generator.config import DB_PATH  # noqa: E402
+from anki_generator.config import DB_PATH, DATA_DIR  # noqa: E402
 
 # Schema notes:
 # - root_id is deliberately NOT the primary key. Principle 1 (polysemy splitting) produces
@@ -152,10 +152,12 @@ def insert_card_records(cards, db_path=None):
             skipped.append({"card_index": idx, "missing_fields": missing})
             continue
 
+        # created_at is preserved when the card carries one (JSONL import / migration);
+        # fresh cards fall back to CURRENT_TIMESTAMP.
         cursor.execute(
             f"""
-            INSERT OR REPLACE INTO cards ({', '.join(CARD_COLUMNS)})
-            VALUES ({', '.join('?' for _ in CARD_COLUMNS)})
+            INSERT OR REPLACE INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
+            VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             (
                 card["root_id"],
@@ -171,6 +173,7 @@ def insert_card_records(cards, db_path=None):
                 json.dumps(card.get("tags", []), ensure_ascii=False),
                 card.get("audio_path", ""),
                 card.get("synced_to_anki", 0),
+                card.get("created_at"),
             ),
         )
         inserted_count += 1
@@ -234,12 +237,90 @@ def fetch_pending(db_path=None):
     conn.close()
     return [_row_to_card(row, columns) for row in rows]
 
+def export_cards(data_dir=None, db_path=None):
+    """Exports the whole DB to monthly-partitioned JSONL files (data/cards-YYYY-MM.jsonl,
+    partitioned on created_at). One card per line, sorted by (root_id, front) with sorted
+    JSON keys, so re-exports are byte-identical and git diffs stay minimal. Partition
+    files whose month no longer holds any cards are removed."""
+    data_dir = Path(data_dir or DATA_DIR)
+    conn = get_connection(db_path)
+    columns = list(CARD_COLUMNS) + ["created_at"]
+    rows = conn.execute(
+        f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
+    ).fetchall()
+    conn.close()
+
+    partitions = {}
+    for row in rows:
+        card = _row_to_card(row, columns)
+        month = (card.get("created_at") or "")[:7] or "unknown"
+        partitions.setdefault(month, []).append(card)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    written, unchanged, removed = [], [], []
+    expected = set()
+    for month, cards in sorted(partitions.items()):
+        file_name = f"cards-{month}.jsonl"
+        expected.add(file_name)
+        content = "".join(
+            json.dumps(card, ensure_ascii=False, sort_keys=True) + "\n" for card in cards
+        )
+        file_path = data_dir / file_name
+        if file_path.exists() and file_path.read_text(encoding="utf-8") == content:
+            unchanged.append(file_name)
+            continue
+        file_path.write_text(content, encoding="utf-8")
+        written.append(file_name)
+
+    for stale in data_dir.glob("cards-*.jsonl"):
+        if stale.name not in expected:
+            stale.unlink()
+            removed.append(stale.name)
+
+    return {"success": True, "total_cards": len(rows), "written": written,
+            "unchanged": unchanged, "removed": removed, "data_dir": str(data_dir)}
+
+def import_cards_data(data_dir=None, db_path=None):
+    """Rebuilds/merges the DB from the JSONL partitions. INSERT OR REPLACE keyed on
+    (root_id, front) makes this idempotent — safe to run on a fresh or existing DB."""
+    data_dir = Path(data_dir or DATA_DIR)
+    files = sorted(data_dir.glob("cards-*.jsonl"))
+    if not files:
+        return {"success": True, "count": 0, "files": 0,
+                "message": f"No JSONL partitions found under {data_dir}"}
+
+    cards = []
+    for file_path in files:
+        for line in file_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                cards.append(json.loads(line))
+
+    result = insert_card_records(cards, db_path=db_path)
+    result["files"] = len(files)
+    return result
+
+def count_export_lines(data_dir=None):
+    """Returns (partition_file_count, total_card_lines) of the JSONL export."""
+    data_dir = Path(data_dir or DATA_DIR)
+    files = sorted(data_dir.glob("cards-*.jsonl"))
+    lines = 0
+    for file_path in files:
+        lines += sum(1 for line in file_path.read_text(encoding="utf-8").splitlines() if line.strip())
+    return len(files), lines
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Anki Generator DB Helper CLI")
     parser.add_argument("--init", action="store_true", help="Initialize the database table")
     parser.add_argument("--check", type=str, help="Check if a word exists by root_id")
     parser.add_argument("--insert", type=str, help="Path to JSON file containing cards to insert")
     parser.add_argument("--pending", action="store_true", help="List cards not yet synced to Anki")
+    parser.add_argument("--export", action="store_true",
+                        help="Export the DB to monthly JSONL partitions under data/")
+    parser.add_argument("--import", dest="import_data", action="store_true",
+                        help="Rebuild/merge the DB from the JSONL partitions under data/")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Override the JSONL data directory (default: <project>/data)")
 
     args = parser.parse_args()
 
@@ -254,6 +335,12 @@ if __name__ == "__main__":
         print(json.dumps(result, ensure_ascii=False))
     elif args.pending:
         result = {"success": True, "pending": fetch_pending()}
+        print(json.dumps(result, ensure_ascii=False))
+    elif args.export:
+        result = export_cards(data_dir=args.data_dir)
+        print(json.dumps(result, ensure_ascii=False))
+    elif args.import_data:
+        result = import_cards_data(data_dir=args.data_dir)
         print(json.dumps(result, ensure_ascii=False))
     else:
         parser.print_help()

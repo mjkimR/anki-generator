@@ -15,6 +15,7 @@ Response contract (stdout, JSON):
 import sys
 import json
 import argparse
+import subprocess
 from pathlib import Path
 
 # Automatically add the src/ directory to the system path
@@ -22,7 +23,12 @@ current_file = Path(__file__).resolve()
 src_dir = current_file.parents[4]
 sys.path.append(str(src_dir))
 
-from anki_generator.config import ANKI_DEFAULT_DECK, MEDIA_DIR, CARDS_PENDING_DIR  # noqa: E402
+from anki_generator.config import (  # noqa: E402
+    ANKI_DEFAULT_DECK,
+    MEDIA_DIR,
+    CARDS_PENDING_DIR,
+    PROJECT_ROOT,
+)
 from anki_generator.skills.anki_card_generator.scripts import (  # noqa: E402
     anki_connector,
     db_helper,
@@ -72,6 +78,29 @@ def archive_file(path):
         counter += 1
     path.rename(target)
     return str(target)
+
+def current_branch():
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else None
+    except Exception:
+        return None
+
+def export_backup(db_path=None):
+    """Exports the DB to the git-tracked JSONL partitions. Refused on main —
+    data/ lives on the cards branch only; main stays logic-only for public exposure."""
+    branch = current_branch()
+    if branch == "main":
+        return {"skipped": True,
+                "reason": ("on branch 'main' — data exports belong on the cards branch. "
+                           "Switch branches and run db_helper --export to catch up.")}
+    try:
+        return db_helper.export_cards(db_path=db_path)
+    except Exception as e:
+        return {"skipped": True, "reason": f"export failed: {e}"}
 
 def connect_anki(deck_name):
     """Returns (True, model_name, None) when Anki is reachable and the deck exists,
@@ -188,12 +217,16 @@ def cmd_run(file_path, deck_name, db_path=None):
     if db_result.get("success") and not db_result.get("skipped"):
         archived_to = archive_file(path)
 
+    # Stage 7 — refresh the git-tracked JSONL backup (skipped on main by design).
+    backup = export_backup(db_path=db_path)
+
     result = {
         "status": "partial" if push_errors else "done",
         "persisted": db_result,
         "anki_online": anki_online,
         "synced_count": synced_count,
         "duplicate_count": duplicate_count,
+        "backup": backup,
     }
     if not anki_online:
         result["anki_error"] = anki_error
@@ -207,6 +240,8 @@ def cmd_run(file_path, deck_name, db_path=None):
                              "errors to the user.")
     else:
         result["message"] = "All cards validated, persisted to the DB, and synced to Anki."
+    if backup.get("written") or backup.get("removed"):
+        result["message"] += " Commit the refreshed data/ partitions on this branch (commit prefix: 'data:')."
     if tts_warnings:
         result["tts_warnings"] = tts_warnings
     if vres.get("warnings"):
@@ -243,6 +278,8 @@ def cmd_sync_pending(deck_name, db_path=None):
         "synced_count": synced_count,
         "duplicate_count": duplicate_count,
         "remaining": len(errors),
+        # sync flags flipped in the DB — refresh the JSONL backup to match.
+        "backup": export_backup(db_path=db_path),
     }
     if errors:
         result["errors"] = errors
@@ -295,18 +332,38 @@ def cmd_doctor(db_path=None):
         add("media_dir", False, str(e))
 
     try:
+        conn = db_helper.get_connection(db_path)
+        db_count = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
+        conn.close()
+        file_count, line_count = db_helper.count_export_lines()
+        if line_count == db_count:
+            add("data_backup", True, f"{db_count} cards ↔ {line_count} JSONL lines ({file_count} partitions)")
+        else:
+            add("data_backup", False,
+                f"DB has {db_count} cards but JSONL export holds {line_count} lines — "
+                f"run db_helper --export (on the cards branch) and commit data/")
+    except Exception as e:
+        add("data_backup", False, str(e))
+
+    try:
         anki_connector.invoke("deckNames")
         model = anki_connector.resolve_note_model()
         add("anki_connect", True, f"note model: {model}")
     except Exception as e:
         add("anki_connect", False, str(e))
 
-    core_ok = all(c["ok"] for c in checks if c["check"] != "anki_connect")
-    anki_ok = next(c["ok"] for c in checks if c["check"] == "anki_connect")
+    # Anki being offline and backup drift are recoverable states, not env failures.
+    WARN_ONLY = {"anki_connect", "data_backup"}
+    core_ok = all(c["ok"] for c in checks if c["check"] not in WARN_ONLY)
+    warnings = [c["check"] for c in checks if c["check"] in WARN_ONLY and not c["ok"]]
     result = {"status": "ok" if core_ok else "error", "checks": checks}
-    if core_ok and not anki_ok:
-        result["message"] = ("Core environment is healthy. Anki is offline — cards will be "
-                             "persisted to the DB and can be pushed later via sync-pending.")
+    if core_ok and warnings:
+        notes = []
+        if "anki_connect" in warnings:
+            notes.append("Anki is offline — cards persist to the DB and sync later via sync-pending.")
+        if "data_backup" in warnings:
+            notes.append("JSONL backup is out of date — export and commit data/ on the cards branch.")
+        result["message"] = "Core environment is healthy. " + " ".join(notes)
     return result, (0 if core_ok else 1)
 
 def _extract_audio_paths(data):

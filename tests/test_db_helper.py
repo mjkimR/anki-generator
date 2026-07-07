@@ -16,6 +16,9 @@ from anki_generator.skills.anki_card_generator.scripts.db_helper import (
     mark_synced,
     fetch_pending,
     split_legacy_back,
+    export_cards,
+    import_cards_data,
+    count_export_lines,
 )
 
 def make_card(root_id, front, **overrides):
@@ -120,6 +123,76 @@ def test_split_legacy_back():
     # Tip-less variant
     reading, meaning, tip = split_legacy_back("よみ<br><br>[뜻] 뜻만")
     assert (reading, meaning, tip) == ("よみ", "뜻만", "")
+
+def test_export_partitions_by_month_and_is_deterministic(tmp_path):
+    db = str(tmp_path / "test.db")
+    data_dir = tmp_path / "data"
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を拒んだ。", created_at="2026-06-15 10:00:00"),
+        make_card("躊躇う(ためらう)", "決断を躊躇った。", created_at="2026-07-01 09:00:00", tags=["N1"]),
+    ], db_path=db)
+
+    result = export_cards(data_dir=data_dir, db_path=db)
+    assert result["total_cards"] == 2
+    assert sorted(result["written"]) == ["cards-2026-06.jsonl", "cards-2026-07.jsonl"]
+
+    # Re-export with no changes must be byte-identical (diff stability).
+    result = export_cards(data_dir=data_dir, db_path=db)
+    assert result["written"] == []
+    assert sorted(result["unchanged"]) == ["cards-2026-06.jsonl", "cards-2026-07.jsonl"]
+
+    assert count_export_lines(data_dir=data_dir) == (2, 2)
+
+def test_export_removes_stale_partitions(tmp_path):
+    db = str(tmp_path / "test.db")
+    data_dir = tmp_path / "data"
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を拒んだ。", created_at="2026-06-15 10:00:00"),
+    ], db_path=db)
+    export_cards(data_dir=data_dir, db_path=db)
+
+    conn = get_connection(db)
+    conn.execute("DELETE FROM cards")
+    conn.commit()
+    conn.close()
+
+    result = export_cards(data_dir=data_dir, db_path=db)
+    assert result["removed"] == ["cards-2026-06.jsonl"]
+    assert list(data_dir.glob("cards-*.jsonl")) == []
+
+def test_import_roundtrip_preserves_everything(tmp_path):
+    src_db = str(tmp_path / "src.db")
+    dst_db = str(tmp_path / "dst.db")
+    data_dir = tmp_path / "data"
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を拒んだ。",
+                  created_at="2026-06-15 10:00:00", tags=["비즈니스", "N1"],
+                  synced_to_anki=1, back_tip="뉘앙스 팁"),
+    ], db_path=src_db)
+    export_cards(data_dir=data_dir, db_path=src_db)
+
+    # Rebuild into a fresh DB from the JSONL alone.
+    result = import_cards_data(data_dir=data_dir, db_path=dst_db)
+    assert result["success"] and result["count"] == 1
+
+    restored = get_connection(dst_db).execute(
+        "SELECT root_id, created_at, synced_to_anki, tags, back_tip FROM cards"
+    ).fetchone()
+    assert restored[0] == "妥協(だきょう)"
+    assert restored[1] == "2026-06-15 10:00:00"  # created_at preserved, not re-stamped
+    assert restored[2] == 1                       # sync flag preserved
+    assert json.loads(restored[3]) == ["비즈니스", "N1"]
+    assert restored[4] == "뉘앙스 팁"
+
+    # Idempotent: importing again changes nothing.
+    import_cards_data(data_dir=data_dir, db_path=dst_db)
+    conn = get_connection(dst_db)
+    assert conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 1
+    conn.close()
+
+def test_import_empty_dir_is_clean_noop(tmp_path):
+    result = import_cards_data(data_dir=tmp_path / "nope", db_path=str(tmp_path / "t.db"))
+    assert result["success"] is True and result["count"] == 0
 
 def test_oldest_schema_migration(tmp_path):
     # Gen-1 layout: root_id PRIMARY KEY + combined back column.
