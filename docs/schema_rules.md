@@ -13,7 +13,9 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
   "cards": [
     {
       "front": "緊迫した交渉の場において、彼は決断を<span style='color:blue'><b>躊躇った</b></span>。",
-      "back": "緊迫した交渉の場において、彼は決断を躊躇った(ためらった)。<br><br>[뜻] 긴박한 협상 자리에서 그는 결단을 망설였다.<br><br>[Tip] '躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스이며, 주로 부정형이나 과거형으로 많이 쓰입니다.",
+      "back_reading": "緊迫した交渉の場において、彼は決断を躊躇った(ためらった)。",
+      "back_meaning": "긴박한 협상 자리에서 그는 결단을 망설였다.",
+      "back_tip": "'躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스이며, 주로 부정형이나 과거형으로 많이 쓰입니다.",
       "target_word": "躊躇った",
       "root_id": "躊躇う(ためらう)",
       "pos": "동사(1그룹/자동사) - 활용 없음",
@@ -36,7 +38,11 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 ### Field Descriptions
 
 - **`front`** *(string, Japanese-only)*: The Japanese example sentence containing the target word wrapped in HTML tags: `<span style='color:blue'><b>[word]</b></span>`. Must contain strictly Japanese characters.
-- **`back`** *(string, Mixed)*: The card back content. Contains the sentence with readings/furigana, a `[뜻]` (meaning) section with Korean translation, and an optional `[Tip]` section explaining usage nuances.
+- **`back_reading`** *(string, Japanese-only)*: The example sentence annotated with readings/furigana. Generated in Pass A together with the other Japanese fields.
+- **`back_meaning`** *(string, Korean-only)*: The context-appropriate Korean meaning ([뜻]). Filled in Pass B only.
+- **`back_tip`** *(string, Korean-only, optional)*: Usage-nuance explanation vs. confusable synonyms ([Tip]). Filled in Pass B only.
+
+  > The Anki-facing back string (`reading<br><br>[뜻] …<br><br>[Tip] …`) is **composed by the pipeline at push time**; storage keeps the languages separated.
 - **`target_word`** *(string, Japanese-only)*: The exact inflected form of the target word as it appears in the `front` sentence.
 - **`root_id`** *(string, Japanese-only)*: The dictionary base form serving as a unique card identifier, in the format `Kanji(Yomigana)` (e.g., `躊躇う(ためらう)`).
 - **`pos`** *(string)*: Part of speech, formatted strictly as `MainPOS(SubPOS) - GrammarTag`.
@@ -81,10 +87,25 @@ To prevent index pollution and font display issues, adhere to strict separation 
 
 - **Japanese-Only Fields**:
   - `front` (only exceptions are HTML tags: `<span style='color:blue'><b>...</b></span>`)
+  - `back_reading`
   - `target_word`
   - `root_id`
   - `components`
   - `collocations`
   - **Must only contain Japanese Kanji (Shinjitai), Hiragana, and Katakana.** Ensure that Korean Hanja is never used (e.g. use `売` instead of `賣`, `圧` instead of `壓`).
-- **Korean-Only/Mixed Fields**:
-  - `back` (contains Yomigana, meaning translations, and tips in Korean).
+- **Korean-Only Fields**:
+  - `back_meaning`, `back_tip` (Pass B commentary).
+
+### Enforcement (schema + two-tier validation)
+
+Language isolation is enforced **structurally**: Japanese and Korean never share a field, and
+generation happens in **two single-language passes** (Japanese fields first, Korean commentary
+second) so no single decode mixes the scripts. Remaining leaks are handled by `validator.py`
+in two tiers:
+
+1. **Old-form / Korean-style hanja (壓, 賣, 內, 敎 …)** are corrected *mechanically*. Running the
+   validator with `--fix` rewrites them to shinjitai (`壓→圧`) via the `joyokanji` table plus a
+   supplemental map of Korean-preferred variant codepoints, and writes the file back. These are
+   reported under `"normalized"` and are **not** failures.
+2. **Hangul (`가-힣`, jamo)** in a Japanese field is a hard failure. It cannot be normalized — the
+   offending field must be **regenerated from `root_id` in pure Japanese** (never edited in place).
