@@ -11,7 +11,7 @@ current_file = Path(__file__).resolve()
 src_dir = current_file.parents[4]  # Path to the src/ directory
 sys.path.append(str(src_dir))
 
-from anki_generator.config import DB_PATH, DATA_DIR  # noqa: E402
+from anki_generator.config import DB_PATH, DATA_DIR, MEDIA_DIR  # noqa: E402
 
 # Schema notes:
 # - root_id is deliberately NOT the primary key. Principle 1 (polysemy splitting) produces
@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS cards (
     collocations TEXT,     -- JSON array representation
     is_hyogai INTEGER DEFAULT 0,
     tags TEXT,             -- JSON array representation
-    audio_path TEXT,
+    audio_path TEXT,       -- bare file name under media/ (kept portable across machines)
+    anki_note_id INTEGER,  -- Anki note id captured at push time (NULL until synced)
     synced_to_anki INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(root_id, front)
@@ -43,7 +44,7 @@ CREATE TABLE IF NOT EXISTS cards (
 
 CARD_COLUMNS = ("root_id", "front", "back_reading", "back_meaning", "back_tip",
                 "target_word", "pos", "components", "collocations", "is_hyogai",
-                "tags", "audio_path", "synced_to_anki")
+                "tags", "audio_path", "anki_note_id", "synced_to_anki")
 
 REQUIRED_CARD_FIELDS = ("root_id", "front", "back_reading", "target_word", "pos")
 
@@ -76,7 +77,11 @@ def ensure_schema(conn):
 
     columns = {row[1] for row in cursor.execute("PRAGMA table_info(cards)")}
     if "id" in columns and "back_reading" in columns:
-        return  # current schema
+        # Current schema — only additive column migrations from here on.
+        if "anki_note_id" not in columns:
+            cursor.execute("ALTER TABLE cards ADD COLUMN anki_note_id INTEGER")
+            conn.commit()
+        return
 
     # Migrate row-by-row in Python: legacy layouts differ in both keys and columns.
     legacy_cols = [row[1] for row in cursor.execute("PRAGMA table_info(cards)")]
@@ -89,7 +94,7 @@ def ensure_schema(conn):
             reading, meaning, tip = split_legacy_back(record.pop("back", ""))
             record.update({"back_reading": reading, "back_meaning": meaning, "back_tip": tip})
         for col in CARD_COLUMNS:
-            record.setdefault(col, "")
+            record.setdefault(col, None if col == "anki_note_id" else "")
         record.setdefault("created_at", None)
         cursor.execute(
             f"""INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
@@ -100,9 +105,24 @@ def ensure_schema(conn):
     conn.commit()
 
 def get_connection(db_path=None):
-    conn = sqlite3.connect(db_path or DB_PATH)
+    target = Path(db_path) if db_path else DB_PATH
+    fresh = not target.exists()
+    conn = sqlite3.connect(target)
     ensure_schema(conn)
+    # A missing default DB (fresh clone) is rebuilt from the git-tracked JSONL
+    # partitions on first touch — otherwise --check would silently report every known
+    # word as new and the agent would regenerate the whole collection as duplicates.
+    if fresh and db_path is None:
+        _restore_from_partitions(conn)
     return conn
+
+def _restore_from_partitions(conn):
+    cards = _read_partition_cards(DATA_DIR)
+    if not cards:
+        return
+    inserted, _ = _insert_cards(conn, cards)
+    conn.commit()
+    print(f"[DB] Fresh database — restored {inserted} cards from {DATA_DIR}", file=sys.stderr)
 
 def init_db(db_path=None):
     conn = get_connection(db_path)
@@ -138,12 +158,20 @@ def check_word(word, db_path=None):
         ],
     }
 
-def insert_card_records(cards, db_path=None):
-    """Inserts a list of card dicts. Same (root_id, front) replaces the existing row;
-    a new sense adds a row. Incomplete cards are skipped and reported."""
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
+# Upsert on (root_id, front): same sense updates in place (keeping the row id and its
+# original created_at unless the incoming card carries an explicit one — so re-inserted
+# cards never drift between monthly partitions), a new sense adds a row.
+_UPSERT_SQL = f"""
+    INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
+    VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
+    ON CONFLICT(root_id, front) DO UPDATE SET
+        {', '.join(f'{c} = excluded.{c}' for c in CARD_COLUMNS if c not in ('root_id', 'front'))},
+        created_at = CASE WHEN ? IS NULL THEN cards.created_at ELSE excluded.created_at END
+"""
 
+def _insert_cards(conn, cards):
+    """Core upsert loop on an open connection. Returns (inserted_count, skipped)."""
+    cursor = conn.cursor()
     inserted_count = 0
     skipped = []
     for idx, card in enumerate(cards):
@@ -152,13 +180,10 @@ def insert_card_records(cards, db_path=None):
             skipped.append({"card_index": idx, "missing_fields": missing})
             continue
 
-        # created_at is preserved when the card carries one (JSONL import / migration);
-        # fresh cards fall back to CURRENT_TIMESTAMP.
+        audio = card.get("audio_path") or ""
+        created_at = card.get("created_at")
         cursor.execute(
-            f"""
-            INSERT OR REPLACE INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
-            VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
+            _UPSERT_SQL,
             (
                 card["root_id"],
                 card["front"],
@@ -171,13 +196,22 @@ def insert_card_records(cards, db_path=None):
                 json.dumps(card.get("collocations", []), ensure_ascii=False),
                 1 if card.get("is_hyogai") else 0,
                 json.dumps(card.get("tags", []), ensure_ascii=False),
-                card.get("audio_path", ""),
+                # Bare file name — an absolute path goes stale (and would poison
+                # gc-media) as soon as the repo moves or the DB is restored elsewhere.
+                Path(audio).name if audio else "",
+                card.get("anki_note_id"),
                 card.get("synced_to_anki", 0),
-                card.get("created_at"),
+                created_at,
+                created_at,
             ),
         )
         inserted_count += 1
+    return inserted_count, skipped
 
+def insert_card_records(cards, db_path=None):
+    """Upserts a list of card dicts. Incomplete cards are skipped and reported."""
+    conn = get_connection(db_path)
+    inserted_count, skipped = _insert_cards(conn, cards)
     conn.commit()
     conn.close()
     result = {"success": True, "count": inserted_count}
@@ -203,13 +237,15 @@ def insert_cards(json_file_path, db_path=None):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def mark_synced(root_id, front, db_path=None):
-    """Marks a single sense card as synced to Anki. Returns True if a row was updated."""
+def mark_synced(root_id, front, note_id=None, db_path=None):
+    """Marks a single sense card as synced to Anki, recording the Anki note id when
+    known. Returns True if a row was updated."""
     conn = get_connection(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE cards SET synced_to_anki = 1 WHERE root_id = ? AND front = ?",
-        (root_id, front),
+        "UPDATE cards SET synced_to_anki = 1, anki_note_id = COALESCE(?, anki_note_id)"
+        " WHERE root_id = ? AND front = ?",
+        (note_id, root_id, front),
     )
     conn.commit()
     updated = cursor.rowcount > 0
@@ -235,7 +271,13 @@ def fetch_pending(db_path=None):
         f"SELECT {', '.join(columns)} FROM cards WHERE synced_to_anki = 0 ORDER BY id"
     ).fetchall()
     conn.close()
-    return [_row_to_card(row, columns) for row in rows]
+    cards = [_row_to_card(row, columns) for row in rows]
+    for card in cards:
+        # The DB stores bare file names; consumers need real paths under media/.
+        audio = card.get("audio_path")
+        if audio and not Path(audio).is_absolute():
+            card["audio_path"] = str(MEDIA_DIR / audio)
+    return cards
 
 def export_cards(data_dir=None, db_path=None):
     """Exports the whole DB to monthly-partitioned JSONL files (data/cards-YYYY-MM.jsonl,
@@ -280,8 +322,17 @@ def export_cards(data_dir=None, db_path=None):
     return {"success": True, "total_cards": len(rows), "written": written,
             "unchanged": unchanged, "removed": removed, "data_dir": str(data_dir)}
 
+def _read_partition_cards(data_dir):
+    cards = []
+    for file_path in sorted(Path(data_dir).glob("cards-*.jsonl")):
+        for line in file_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                cards.append(json.loads(line))
+    return cards
+
 def import_cards_data(data_dir=None, db_path=None):
-    """Rebuilds/merges the DB from the JSONL partitions. INSERT OR REPLACE keyed on
+    """Rebuilds/merges the DB from the JSONL partitions. The upsert keyed on
     (root_id, front) makes this idempotent — safe to run on a fresh or existing DB."""
     data_dir = Path(data_dir or DATA_DIR)
     files = sorted(data_dir.glob("cards-*.jsonl"))
@@ -289,14 +340,7 @@ def import_cards_data(data_dir=None, db_path=None):
         return {"success": True, "count": 0, "files": 0,
                 "message": f"No JSONL partitions found under {data_dir}"}
 
-    cards = []
-    for file_path in files:
-        for line in file_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                cards.append(json.loads(line))
-
-    result = insert_card_records(cards, db_path=db_path)
+    result = insert_card_records(_read_partition_cards(data_dir), db_path=db_path)
     result["files"] = len(files)
     return result
 

@@ -14,9 +14,9 @@ DB_PATH = PROJECT_ROOT / "anki_generator.db"
 # AnkiConnect configuration
 ANKI_CONNECT_URL = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
 ANKI_DEFAULT_DECK = os.getenv("ANKI_DEFAULT_DECK", "Japanese::Vocabulary")
-# Note model name. Localized Anki installs rename "Basic" (Korean: 기본, Japanese: 基本);
-# the connector probes these fallbacks automatically, but an explicit env var wins.
-ANKI_NOTE_MODEL = os.getenv("ANKI_NOTE_MODEL", "Basic")
+# Note model owned by this repo: created in Anki on first push and kept in sync with the
+# git-managed templates/CSS under skills/anki_card_generator/anki_model/.
+ANKI_NOTE_MODEL = os.getenv("ANKI_NOTE_MODEL", "AnkiGen JA")
 
 # TTS configuration
 TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
@@ -25,8 +25,8 @@ TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
 MEDIA_DIR = PROJECT_ROOT / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Text backup of the DB: monthly-partitioned JSONL committed to git (cards branch only).
-# Deliberately NOT mkdir'd at import time — data/ must never appear on the main branch.
+# Text backup of the DB: monthly-partitioned JSONL committed to git alongside the code.
+# Not mkdir'd at import time — created on demand by db_helper.export_cards().
 DATA_DIR = PROJECT_ROOT / "data"
 
 # Card working files: one JSON per target word under pending/, archived to done/

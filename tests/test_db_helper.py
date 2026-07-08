@@ -8,6 +8,7 @@ test_file = Path(__file__).resolve()
 src_dir = test_file.parents[1] / "src"
 sys.path.append(str(src_dir))
 
+from anki_generator.skills.anki_card_generator.scripts import db_helper
 from anki_generator.skills.anki_card_generator.scripts.db_helper import (
     get_connection,
     insert_cards,
@@ -105,12 +106,65 @@ def test_mark_synced_and_fetch_pending(tmp_path):
     assert len(pending) == 2
     assert pending[0]["tags"] == ["N1"]  # JSON arrays are parsed back
 
-    assert mark_synced("妥協(だきょう)", "妥協を拒んだ。", db_path=db) is True
+    assert mark_synced("妥協(だきょう)", "妥協を拒んだ。", note_id=777, db_path=db) is True
     assert mark_synced("妥協(だきょう)", "존재하지 않는 front", db_path=db) is False
 
     pending = fetch_pending(db_path=db)
     assert len(pending) == 1
     assert pending[0]["root_id"] == "躊躇う(ためらう)"
+
+    conn = get_connection(db)
+    note_id = conn.execute(
+        "SELECT anki_note_id FROM cards WHERE front = '妥協を拒んだ。'").fetchone()[0]
+    conn.close()
+    assert note_id == 777
+
+def test_reinsert_without_timestamp_keeps_created_at(tmp_path):
+    # Regenerating a sense must not re-stamp created_at — the card would silently
+    # migrate to a different monthly JSONL partition.
+    db = str(tmp_path / "test.db")
+    insert_card_records(
+        [make_card("妥協(だきょう)", "妥協を拒んだ。", created_at="2026-06-15 10:00:00")],
+        db_path=db)
+    insert_card_records(
+        [make_card("妥協(だきょう)", "妥協を拒んだ。", back_tip="새 팁")],  # no created_at
+        db_path=db)
+
+    conn = get_connection(db)
+    row = conn.execute("SELECT created_at, back_tip FROM cards").fetchone()
+    conn.close()
+    assert row == ("2026-06-15 10:00:00", "새 팁")
+
+def test_audio_path_stored_as_bare_name_and_resolved(tmp_path, monkeypatch):
+    # Absolute paths go stale when the repo moves; the DB keeps the bare file name
+    # and fetch_pending resolves it against the current media dir.
+    media_dir = tmp_path / "media"
+    monkeypatch.setattr(db_helper, "MEDIA_DIR", media_dir)
+    db = str(tmp_path / "test.db")
+    insert_card_records(
+        [make_card("妥協(だきょう)", "妥協を拒んだ。",
+                   audio_path="/old/machine/media/tts_abc.mp3")],
+        db_path=db)
+
+    conn = get_connection(db)
+    stored = conn.execute("SELECT audio_path FROM cards").fetchone()[0]
+    conn.close()
+    assert stored == "tts_abc.mp3"
+    assert fetch_pending(db_path=db)[0]["audio_path"] == str(media_dir / "tts_abc.mp3")
+
+def test_fresh_default_db_auto_restores_from_partitions(tmp_path, monkeypatch):
+    # A fresh clone has data/ but no DB — the first touch of the default DB must
+    # rebuild it, or --check would report every known word as new.
+    src_db = str(tmp_path / "src.db")
+    data_dir = tmp_path / "data"
+    insert_card_records([make_card("妥協(だきょう)", "妥協を拒んだ。")], db_path=src_db)
+    export_cards(data_dir=data_dir, db_path=src_db)
+
+    monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "default.db")
+    monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    result = check_word("妥協", db_path=None)  # db_path=None → default DB path
+    assert result["exists"] is True
+    assert result["count"] == 1
 
 def test_split_legacy_back():
     reading, meaning, tip = split_legacy_back(
