@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import json
 import base64
 import argparse
@@ -12,6 +13,30 @@ src_dir = current_file.parents[4]
 sys.path.append(str(src_dir))
 
 from anki_generator.config import ANKI_CONNECT_URL, ANKI_DEFAULT_DECK, ANKI_NOTE_MODEL  # noqa: E402
+
+# The note model is code: field layout below, templates/CSS in the git-managed files
+# under anki_model/. ensure_note_model() creates the model in Anki and keeps it in
+# sync, so the repo — not the Anki profile — owns the card look.
+MODEL_DIR = current_file.parent.parent / "anki_model"
+# Front must stay first — it is Anki's duplicate-detection key. RootId is not rendered
+# by any template; it exists so Anki-side features (leech rescue, flag harvest) can
+# identify the word without depending on the note-id ↔ DB join.
+MODEL_FIELDS = ("Front", "Reading", "Meaning", "Tip", "Audio", "RootId")
+CARD_TEMPLATE_NAME = "Card 1"
+
+# Generated cards mark the target word as *word* — plain text, no HTML. The marker is
+# converted to a styled span only here, at push time; styling itself lives in style.css.
+TARGET_MARKER_RE = re.compile(r"\*([^*\n]+)\*")
+
+def marker_to_html(text):
+    return TARGET_MARKER_RE.sub(r'<span class="t">\1</span>', text or "")
+
+def _load_model_assets():
+    return (
+        (MODEL_DIR / "front.html").read_text(encoding="utf-8"),
+        (MODEL_DIR / "back.html").read_text(encoding="utf-8"),
+        (MODEL_DIR / "style.css").read_text(encoding="utf-8"),
+    )
 
 def log(message):
     """Diagnostics go to stderr — stdout is reserved for the final JSON result,
@@ -56,28 +81,16 @@ def upload_audio_to_anki(audio_path):
     result_filename = invoke("storeMediaFile", filename=file_name, data=file_content_base64)
     return result_filename
 
-def compose_back(card):
-    """Renders the Anki back string from the structured fields
-    (back_reading / back_meaning / back_tip). Composition happens ONLY here, at push
-    time — storage keeps the languages separated. Falls back to a legacy combined
-    'back' string if the structured fields are absent."""
-    parts = []
-    if card.get("back_reading"):
-        parts.append(card["back_reading"])
-    if card.get("back_meaning"):
-        parts.append(f"[뜻] {card['back_meaning']}")
-    if card.get("back_tip"):
-        parts.append(f"[Tip] {card['back_tip']}")
-    if parts:
-        return "<br><br>".join(parts)
-    return card.get("back", "")
-
 def push_card(card, deck_name, model_name):
-    """Pushes a single card as an Anki note. Returns 'synced' or 'duplicate';
-    raises on any other failure so the caller can record a per-card error."""
-    front = card.get("front", "")
+    """Pushes a single card as an Anki note. Returns ('synced', note_id) or
+    ('duplicate', None); raises on any other failure so the caller can record a
+    per-card error. The note id is what makes later updates (audio backfill,
+    field edits, deletion sync) possible — callers should persist it.
+
+    Languages and concerns stay in separate note fields — no combined back string.
+    The {{furigana:Reading}} filter in the back template renders the bracket
+    yomigana (決断[けつだん]) as ruby text."""
     audio_path = card.get("audio_path", "")
-    tags = card.get("tags", [])
 
     # Sync audio media if present
     audio_filename = ""
@@ -87,42 +100,62 @@ def push_card(card, deck_name, model_name):
         except Exception as audio_err:
             log(f"[Anki Warning] Failed to upload audio: {str(audio_err)}")
 
-    # Append audio tag [sound:filename.mp3] to Front field
-    front_field = front
-    if audio_filename:
-        front_field += f"\n\n[sound:{audio_filename}]"
-
     note = {
         "deckName": deck_name,
         "modelName": model_name,
         "fields": {
-            "Front": front_field,
-            "Back": compose_back(card)
+            "Front": marker_to_html(card.get("front", "")),
+            "Reading": card.get("back_reading", ""),
+            "Meaning": card.get("back_meaning", ""),
+            "Tip": card.get("back_tip", ""),
+            "Audio": f"[sound:{audio_filename}]" if audio_filename else "",
+            "RootId": card.get("root_id", ""),
         },
-        "tags": tags
+        "tags": card.get("tags", []),
     }
 
     try:
-        invoke("addNote", note=note)
-        return "synced"
+        note_id = invoke("addNote", note=note)
+        return "synced", note_id
     except Exception as e:
         if "duplicate" in str(e).lower():
             # The note already exists in Anki (e.g. a retried batch) — treat as synced.
             log(f"[Anki] Skipped duplicate note ({card.get('root_id')})")
-            return "duplicate"
+            return "duplicate", None
         raise
 
-def resolve_note_model():
-    """Resolves the note model name. Localized Anki installs rename 'Basic'
-    (Korean: 기본, Japanese: 基本), which would make every addNote call fail."""
-    models = invoke("modelNames")
-    for candidate in (ANKI_NOTE_MODEL, "Basic", "기본", "基本"):
-        if candidate in models:
-            return candidate
-    raise Exception(
-        f"No Basic-style note model found in Anki (available: {models}). "
-        f"Set ANKI_NOTE_MODEL in .env to one of the available models."
-    )
+def ensure_note_model():
+    """Creates the repo-owned note model in Anki if missing, and syncs its styling and
+    templates from the git-managed anki_model/ files when they drift. A same-named model
+    with a different field layout is refused rather than mutated — it isn't ours."""
+    name = ANKI_NOTE_MODEL
+    front, back, css = _load_model_assets()
+
+    if name not in invoke("modelNames"):
+        invoke("createModel", modelName=name, inOrderFields=list(MODEL_FIELDS), css=css,
+               cardTemplates=[{"Name": CARD_TEMPLATE_NAME, "Front": front, "Back": back}])
+        log(f"[Anki] Created note model '{name}'")
+        return name
+
+    fields = invoke("modelFieldNames", modelName=name)
+    if list(fields) != list(MODEL_FIELDS):
+        raise Exception(
+            f"Note model '{name}' exists but its fields {fields} do not match "
+            f"{list(MODEL_FIELDS)}. Point ANKI_NOTE_MODEL at a fresh name and let the "
+            f"pipeline create it."
+        )
+
+    if invoke("modelStyling", modelName=name)["css"] != css:
+        invoke("updateModelStyling", model={"name": name, "css": css})
+        log(f"[Anki] Synced styling of '{name}' from anki_model/style.css")
+
+    desired = {"Front": front, "Back": back}
+    if invoke("modelTemplates", modelName=name).get(CARD_TEMPLATE_NAME) != desired:
+        invoke("updateModelTemplates",
+               model={"name": name, "templates": {CARD_TEMPLATE_NAME: desired}})
+        log(f"[Anki] Synced templates of '{name}' from anki_model/")
+
+    return name
 
 def push_to_anki(card_json_path, deck_name):
     if not os.path.exists(card_json_path):
@@ -140,7 +173,7 @@ def push_to_anki(card_json_path, deck_name):
         }
 
     try:
-        model_name = resolve_note_model()
+        model_name = ensure_note_model()
 
         # Create deck if it doesn't exist
         if deck_name not in decks:
@@ -166,8 +199,10 @@ def push_to_anki(card_json_path, deck_name):
     card_errors = []
     for idx, card in enumerate(cards):
         try:
-            outcome = push_card(card, deck_name, model_name)
+            outcome, note_id = push_card(card, deck_name, model_name)
             card["synced_to_anki"] = 1
+            if note_id is not None:
+                card["anki_note_id"] = note_id
             if outcome == "duplicate":
                 duplicate_count += 1
             else:

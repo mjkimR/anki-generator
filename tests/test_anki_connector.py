@@ -8,22 +8,16 @@ sys.path.append(str(src_dir))
 
 from anki_generator.skills.anki_card_generator.scripts import anki_connector
 
-def test_compose_back_full():
-    card = {"back_reading": "よみ", "back_meaning": "뜻", "back_tip": "팁"}
-    assert anki_connector.compose_back(card) == "よみ<br><br>[뜻] 뜻<br><br>[Tip] 팁"
-
-def test_compose_back_without_tip():
-    card = {"back_reading": "よみ", "back_meaning": "뜻"}
-    assert anki_connector.compose_back(card) == "よみ<br><br>[뜻] 뜻"
-
-def test_compose_back_legacy_fallback():
-    card = {"back": "legacy combined string"}
-    assert anki_connector.compose_back(card) == "legacy combined string"
+def test_marker_to_html():
+    assert (anki_connector.marker_to_html("決断を*躊躇った*。")
+            == '決断を<span class="t">躊躇った</span>。')
+    # Legacy/plain strings pass through untouched.
+    assert anki_connector.marker_to_html("決断を躊躇った。") == "決断を躊躇った。"
 
 def make_card(**overrides):
     card = {
-        "front": "彼は<span style='color:blue'><b>妥協</b></span>を拒んだ。",
-        "back_reading": "かれはだきょうをこばんだ。",
+        "front": "彼は*妥協*を拒んだ。",
+        "back_reading": "彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。",
         "back_meaning": "타협",
         "root_id": "妥協(だきょう)",
         "tags": ["N1"],
@@ -32,7 +26,7 @@ def make_card(**overrides):
     card.update(overrides)
     return card
 
-def test_push_card_success(monkeypatch):
+def test_push_card_maps_structured_fields(monkeypatch):
     captured = {}
 
     def fake_invoke(action, **params):
@@ -41,41 +35,93 @@ def test_push_card_success(monkeypatch):
         return 12345
 
     monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
-    outcome = anki_connector.push_card(make_card(), "TestDeck", "Basic")
+    outcome, note_id = anki_connector.push_card(make_card(), "TestDeck", "AnkiGen JA")
     assert outcome == "synced"
+    assert note_id == 12345  # captured so later note updates/deletes stay possible
     assert captured["action"] == "addNote"
-    assert captured["note"]["deckName"] == "TestDeck"
-    assert captured["note"]["modelName"] == "Basic"
-    assert captured["note"]["fields"]["Back"] == "かれはだきょうをこばんだ。<br><br>[뜻] 타협"
+    note = captured["note"]
+    assert note["deckName"] == "TestDeck"
+    assert note["modelName"] == "AnkiGen JA"
+    # Languages/concerns land in separate fields; the marker becomes a styled span.
+    assert note["fields"]["Front"] == '彼は<span class="t">妥協</span>を拒んだ。'
+    assert note["fields"]["Reading"] == "彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。"
+    assert note["fields"]["Meaning"] == "타협"
+    assert note["fields"]["Tip"] == ""
+    assert note["fields"]["Audio"] == ""
+    # Unrendered link field: lets Anki-side features identify the word without the DB.
+    assert note["fields"]["RootId"] == "妥協(だきょう)"
 
 def test_push_card_duplicate_is_skip(monkeypatch):
     def fake_invoke(action, **params):
         raise Exception("cannot create note because it is a duplicate")
 
     monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
-    assert anki_connector.push_card(make_card(), "TestDeck", "Basic") == "duplicate"
+    assert anki_connector.push_card(make_card(), "TestDeck", "AnkiGen JA") == ("duplicate", None)
 
 def test_push_card_other_error_raises(monkeypatch):
     def fake_invoke(action, **params):
-        raise Exception("model was not found: Basic")
+        raise Exception("model was not found: AnkiGen JA")
 
     monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
     try:
-        anki_connector.push_card(make_card(), "TestDeck", "Basic")
+        anki_connector.push_card(make_card(), "TestDeck", "AnkiGen JA")
         assert False, "expected the error to propagate"
     except Exception as e:
         assert "model was not found" in str(e)
 
-def test_resolve_note_model_localized_fallback(monkeypatch):
-    # A Korean-locale Anki install has no "Basic" — the probe must find "기본".
-    monkeypatch.setattr(anki_connector, "invoke",
-                        lambda action, **p: ["기본", "기본 (뒤집힌 카드 포함)"])
-    assert anki_connector.resolve_note_model() == "기본"
+def test_ensure_note_model_creates_from_repo_assets(monkeypatch):
+    created = {}
 
-def test_resolve_note_model_no_candidate(monkeypatch):
-    monkeypatch.setattr(anki_connector, "invoke", lambda action, **p: ["Cloze"])
+    def fake_invoke(action, **params):
+        if action == "modelNames":
+            return ["Basic"]
+        if action == "createModel":
+            created.update(params)
+            return {}
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    name = anki_connector.ensure_note_model()
+    assert name == anki_connector.ANKI_NOTE_MODEL
+    assert created["inOrderFields"] == list(anki_connector.MODEL_FIELDS)
+    # The git-managed assets are the source of truth for the card look.
+    assert "{{furigana:Reading}}" in created["cardTemplates"][0]["Back"]
+    assert ".t {" in created["css"]
+
+def test_ensure_note_model_syncs_drifted_styling(monkeypatch):
+    calls = []
+    front, back, css = anki_connector._load_model_assets()
+
+    def fake_invoke(action, **params):
+        calls.append(action)
+        if action == "modelNames":
+            return [anki_connector.ANKI_NOTE_MODEL]
+        if action == "modelFieldNames":
+            return list(anki_connector.MODEL_FIELDS)
+        if action == "modelStyling":
+            return {"css": "/* stale */"}
+        if action == "modelTemplates":
+            return {anki_connector.CARD_TEMPLATE_NAME: {"Front": front, "Back": back}}
+        if action == "updateModelStyling":
+            return None
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    anki_connector.ensure_note_model()
+    assert "updateModelStyling" in calls       # drifted css got synced
+    assert "updateModelTemplates" not in calls  # templates already match
+
+def test_ensure_note_model_refuses_foreign_field_layout(monkeypatch):
+    def fake_invoke(action, **params):
+        if action == "modelNames":
+            return [anki_connector.ANKI_NOTE_MODEL]
+        if action == "modelFieldNames":
+            return ["Front", "Back"]  # someone else's model under our name
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
     try:
-        anki_connector.resolve_note_model()
-        assert False, "expected failure when no Basic-style model exists"
+        anki_connector.ensure_note_model()
+        assert False, "expected a refusal instead of mutating a foreign model"
     except Exception as e:
-        assert "ANKI_NOTE_MODEL" in str(e)
+        assert "do not match" in str(e)
