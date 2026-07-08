@@ -22,12 +22,15 @@ sys.path.append(str(src_dir))
 from anki_generator.config import MEDIA_DIR, TTS_DEFAULT_VOICE  # noqa: E402
 
 def clean_html(raw_html):
-    """Strips HTML markup to prevent TTS mispronunciations.
-    <br> becomes a space (not deleted outright, which would fuse adjacent words),
-    remaining tags are removed, and HTML entities are decoded."""
+    """Strips card markup to prevent TTS mispronunciations: <br> becomes a space (not
+    deleted outright, which would fuse adjacent words), remaining tags are removed,
+    HTML entities are decoded, *target markers* are dropped, and bracket furigana
+    (決断[けつだん]) is removed so readings are not spoken twice."""
     text = re.sub(r'<br\s*/?>', ' ', raw_html, flags=re.IGNORECASE)
     text = re.sub(r'<.*?>', '', text)
     text = html.unescape(text)
+    text = text.replace('*', '')
+    text = re.sub(r'\[[^\]]*\]', '', text)
     return text.strip()
 
 async def generate_speech(text, output_path, voice):
@@ -63,15 +66,21 @@ async def generate_speech(text, output_path, voice):
             os.remove(output_path)
         return {"success": False, "error": str(e)}
 
+def default_output_path(text, voice):
+    """Cache path: media/tts_<md5 of voice + cleaned text>.mp3. The voice is part of
+    the key — otherwise switching TTS_DEFAULT_VOICE would silently reuse audio
+    synthesized with the old voice."""
+    key = f"{voice}|{clean_html(text)}"
+    return MEDIA_DIR / f"tts_{hashlib.md5(key.encode('utf-8')).hexdigest()}.mp3"
+
 def synthesize(text, output_path=None, voice=None):
     """Synchronous entry point used by the pipeline and CLI.
-    Defaults the output path to media/tts_<md5-of-cleaned-text>.mp3, which doubles as a
-    cache key: if the file already exists (non-empty), synthesis is skipped entirely —
-    re-running the pipeline never re-spends TTS calls on the same sentence."""
+    The default output path doubles as a cache key: if the file already exists
+    (non-empty), synthesis is skipped entirely — re-running the pipeline never
+    re-spends TTS calls on the same (voice, sentence) pair."""
     voice = voice or TTS_DEFAULT_VOICE
     if output_path is None:
-        text_hash = hashlib.md5(clean_html(text).encode('utf-8')).hexdigest()
-        output_path = MEDIA_DIR / f"tts_{text_hash}.mp3"
+        output_path = default_output_path(text, voice)
     else:
         output_path = Path(output_path).resolve()
 

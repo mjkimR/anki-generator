@@ -6,7 +6,11 @@ test_file = Path(__file__).resolve()
 src_dir = test_file.parents[1] / "src"
 sys.path.append(str(src_dir))
 
-from anki_generator.skills.anki_card_generator.scripts.tts_helper import clean_html, synthesize
+from anki_generator.skills.anki_card_generator.scripts.tts_helper import (
+    clean_html,
+    default_output_path,
+    synthesize,
+)
 
 def test_clean_html_strips_span_markup():
     text = "資金繰りの<span style='color:blue'><b>圧迫</b></span>で難航した。"
@@ -23,6 +27,23 @@ def test_clean_html_decodes_entities():
 
 def test_clean_html_empty_after_strip():
     assert clean_html("<span style='color:blue'><b></b></span>") == ""
+
+def test_clean_html_strips_target_marker():
+    assert clean_html("彼は決断を*躊躇った*。") == "彼は決断を躊躇った。"
+
+def test_clean_html_strips_bracket_furigana():
+    # Readings must not be spoken twice if annotated text ever reaches TTS.
+    assert clean_html("彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。") == "彼は 決断を 躊躇った。"
+
+def test_cache_key_includes_voice():
+    # Switching TTS_DEFAULT_VOICE must never silently reuse audio synthesized with the
+    # old voice — the voice is part of the cache key.
+    text = "彼は妥協を拒んだ。"
+    assert (default_output_path(text, "ja-JP-NanamiNeural")
+            != default_output_path(text, "ja-JP-KeitaNeural"))
+    # Markup differences do not fragment the cache: hashing uses the cleaned text.
+    assert (default_output_path("彼は*妥協*を拒んだ。", "ja-JP-NanamiNeural")
+            == default_output_path(text, "ja-JP-NanamiNeural"))
 
 def test_synthesize_uses_existing_file_as_cache(tmp_path):
     # A non-empty file at the output path short-circuits synthesis entirely —

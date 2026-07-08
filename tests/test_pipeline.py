@@ -12,16 +12,14 @@ from anki_generator.skills.anki_card_generator.scripts import db_helper
 
 def make_japanese_card(**overrides):
     card = {
-        "front": "彼は<span style='color:blue'><b>妥協</b></span>を拒んだ。",
-        "back_reading": "かれは妥協(だきょう)を拒(こば)んだ。",
+        "front": "彼は*妥協*を拒んだ。",
+        "back_reading": "彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。",
         "target_word": "妥協",
         "root_id": "妥協(だきょう)",
         "pos": "명사",
         "components": [],
         "collocations": [],
         "is_hyogai": False,
-        "tags": ["N1"],
-        "audio_path": "",
     }
     card.update(overrides)
     return card
@@ -31,12 +29,16 @@ def write_file(tmp_path, cards, name="妥協.json"):
     path.write_text(json.dumps({"cards": cards}, ensure_ascii=False), encoding="utf-8")
     return path
 
-def patch_backup(monkeypatch, tmp_path, branch="cards"):
-    """Points the auto-export at a temp dir and pins the branch so tests never
-    touch the real data/ partitions regardless of the repo's checked-out branch."""
-    monkeypatch.setattr(pipeline, "current_branch", lambda: branch)
+def patch_backup(monkeypatch, tmp_path):
+    """Points the auto-export at a temp dir so tests never touch the real data/."""
     monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
     return tmp_path / "data"
+
+def patch_attempts(monkeypatch, tmp_path):
+    """Points the retry-cap sidecar at a temp file so tests never touch the real one."""
+    sidecar = tmp_path / ".attempts.json"
+    monkeypatch.setattr(pipeline, "ATTEMPTS_PATH", sidecar)
+    return sidecar
 
 def fake_tts_ok(monkeypatch):
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
@@ -48,7 +50,9 @@ def fake_anki_online(monkeypatch, deck="TestDeck"):
         if action == "deckNames":
             return [deck]
         if action == "modelNames":
-            return ["Basic"]
+            return []  # first contact — the repo-owned model gets created
+        if action == "createModel":
+            return {}
         if action == "addNote":
             return 12345
         raise AssertionError(f"unexpected action {action}")
@@ -59,24 +63,42 @@ def fake_anki_offline(monkeypatch):
         raise Exception("connection refused")
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
-def test_hangul_leak_regenerates_then_escalates(tmp_path):
+def test_hangul_leak_regenerates_then_escalates(tmp_path, monkeypatch):
+    patch_attempts(monkeypatch, tmp_path)
     db = str(tmp_path / "test.db")
-    path = write_file(tmp_path, [make_japanese_card(front="그는 <b>妥協</b>を拒んだ。")])
+    bad_card = make_japanese_card(front="그는 <b>妥協</b>を拒んだ。")
+    path = write_file(tmp_path, [bad_card])
 
     for expected_attempt in (1, 2):
         result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
         assert result["status"] == "regenerate"
         assert result["attempts"] == expected_attempt
         assert code == 0
+        # The agent typically rewrites the working file wholesale when regenerating —
+        # the cap lives in a sidecar precisely so a rewrite cannot reset it.
+        path.write_text(json.dumps({"cards": [bad_card]}, ensure_ascii=False),
+                        encoding="utf-8")
 
     result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
     assert result["status"] == "escalate"
     assert result["attempts"] == 3
     assert code == 1
 
-    # The cap is persisted in the file itself, not in agent memory.
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["_meta"]["attempts"] == 3
+def test_attempts_clear_once_validation_passes(tmp_path, monkeypatch):
+    sidecar = patch_attempts(monkeypatch, tmp_path)
+    db = str(tmp_path / "test.db")
+    path = write_file(tmp_path, [make_japanese_card(front="그는 <b>妥協</b>を拒んだ。")])
+
+    result, _ = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert result["status"] == "regenerate"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) != {}
+
+    # A genuinely fixed file passes validation and wipes its failure history.
+    path.write_text(json.dumps({"cards": [make_japanese_card()]}, ensure_ascii=False),
+                    encoding="utf-8")
+    result, _ = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert result["status"] == "need_korean"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {}
 
 def test_valid_japanese_gates_on_korean(tmp_path):
     db = str(tmp_path / "test.db")
@@ -111,11 +133,11 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     assert exported["root_id"] == "妥協(だきょう)"
     assert exported["synced_to_anki"] == 1
 
-    # DB-first persistence, then marked synced.
+    # DB-first persistence, then marked synced with the Anki note id captured.
     conn = db_helper.get_connection(db)
-    row = conn.execute("SELECT synced_to_anki, back_meaning FROM cards").fetchone()
+    row = conn.execute("SELECT synced_to_anki, back_meaning, anki_note_id FROM cards").fetchone()
     conn.close()
-    assert row == (1, "타협")
+    assert row == (1, "타협", 12345)
 
     # Working file archived out of the way.
     assert not path.exists()
@@ -146,18 +168,6 @@ def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     assert result["status"] == "done"
     assert result["synced_count"] == 1
     assert db_helper.fetch_pending(db_path=db) == []
-
-def test_export_refused_on_main_branch(tmp_path, monkeypatch):
-    db = str(tmp_path / "test.db")
-    patch_backup(monkeypatch, tmp_path, branch="main")
-    fake_tts_ok(monkeypatch)
-    fake_anki_offline(monkeypatch)
-    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
-
-    result, _ = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
-    assert result["backup"]["skipped"] is True
-    assert "main" in result["backup"]["reason"]
-    assert not (tmp_path / "data").exists()  # nothing written on main
 
 def test_gc_media_removes_only_unreferenced(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")

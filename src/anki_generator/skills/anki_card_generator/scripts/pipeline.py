@@ -15,7 +15,6 @@ Response contract (stdout, JSON):
 import sys
 import json
 import argparse
-import subprocess
 from pathlib import Path
 
 # Automatically add the src/ directory to the system path
@@ -25,9 +24,9 @@ sys.path.append(str(src_dir))
 
 from anki_generator.config import (  # noqa: E402
     ANKI_DEFAULT_DECK,
+    ANKI_NOTE_MODEL,
     MEDIA_DIR,
     CARDS_PENDING_DIR,
-    PROJECT_ROOT,
 )
 from anki_generator.skills.anki_card_generator.scripts import (  # noqa: E402
     anki_connector,
@@ -47,21 +46,41 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def normalize_shape(path):
-    """Coerces the file to the canonical {"cards": [...], "_meta": {...}} shape."""
+    """Coerces the file to the canonical {"cards": [...]} shape."""
     data = load_json(path)
-    changed = False
     if isinstance(data, list):
         data = {"cards": data}
-        changed = True
+        save_json(path, data)
     elif isinstance(data, dict) and "cards" not in data:
         data = {"cards": [data]}
-        changed = True
-    if "_meta" not in data:
-        data["_meta"] = {"attempts": 0}
-        changed = True
-    if changed:
         save_json(path, data)
     return data
+
+# Retry attempts live in a sidecar, NOT inside the working file: the agent is expected
+# to rewrite the working file wholesale when regenerating, and a rewrite must never be
+# able to reset the cap.
+ATTEMPTS_PATH = CARDS_PENDING_DIR / ".attempts.json"
+
+def _load_attempts():
+    try:
+        with open(ATTEMPTS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+def bump_attempts(file_path):
+    key = str(Path(file_path).resolve())
+    attempts = _load_attempts()
+    attempts[key] = attempts.get(key, 0) + 1
+    save_json(ATTEMPTS_PATH, attempts)
+    return attempts[key]
+
+def clear_attempts(file_path):
+    key = str(Path(file_path).resolve())
+    attempts = _load_attempts()
+    if key in attempts:
+        del attempts[key]
+        save_json(ATTEMPTS_PATH, attempts)
 
 def archive_file(path):
     """Moves a finished working file out of pending/. The DB is the source of truth
@@ -79,35 +98,21 @@ def archive_file(path):
     path.rename(target)
     return str(target)
 
-def current_branch():
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5,
-        )
-        return proc.stdout.strip() if proc.returncode == 0 else None
-    except Exception:
-        return None
-
 def export_backup(db_path=None):
-    """Exports the DB to the git-tracked JSONL partitions. Refused on main —
-    data/ lives on the cards branch only; main stays logic-only for public exposure."""
-    branch = current_branch()
-    if branch == "main":
-        return {"skipped": True,
-                "reason": ("on branch 'main' — data exports belong on the cards branch. "
-                           "Switch branches and run db_helper --export to catch up.")}
+    """Refreshes the git-tracked JSONL partitions under data/ — the DB's durable,
+    diffable mirror. A failure degrades to a skip; it never blocks the pipeline."""
     try:
         return db_helper.export_cards(db_path=db_path)
     except Exception as e:
         return {"skipped": True, "reason": f"export failed: {e}"}
 
 def connect_anki(deck_name):
-    """Returns (True, model_name, None) when Anki is reachable and the deck exists,
-    or (False, None, error) otherwise."""
+    """Returns (True, model_name, None) when Anki is reachable, the repo-owned note
+    model exists (created/synced from the git-managed anki_model/ files), and the deck
+    exists, or (False, None, error) otherwise."""
     try:
         decks = anki_connector.invoke("deckNames")
-        model_name = anki_connector.resolve_note_model()
+        model_name = anki_connector.ensure_note_model()
         if deck_name not in decks:
             anki_connector.invoke("createDeck", deck=deck_name)
         return True, model_name, None
@@ -124,26 +129,25 @@ def cmd_run(file_path, deck_name, db_path=None):
     # Stage 1 — mechanical normalization (kyujitai -> shinjitai) + validation.
     vres = validator.validate_card_json(str(path), auto_fix=True)
     data = load_json(path)
-    meta = data.setdefault("_meta", {"attempts": 0})
     cards = data["cards"]
 
     if not vres.get("valid"):
-        # The retry cap lives HERE, in code — not in prose the agent may ignore.
-        meta["attempts"] = meta.get("attempts", 0) + 1
-        save_json(path, data)
-        remaining = MAX_ATTEMPTS - meta["attempts"]
+        # The retry cap lives HERE, in code and in a sidecar file — not in prose the
+        # agent may ignore, nor in the working file the agent rewrites.
+        attempts = bump_attempts(path)
+        remaining = MAX_ATTEMPTS - attempts
         if remaining <= 0:
             return {
                 "status": "escalate",
-                "attempts": meta["attempts"],
+                "attempts": attempts,
                 "errors": vres.get("errors"),
                 "message": ("Validation failed "
-                            f"{meta['attempts']} times. STOP retrying — report the failing "
+                            f"{attempts} times. STOP retrying — report the failing "
                             "fields to the user and ask how to proceed."),
             }, 1
         return {
             "status": "regenerate",
-            "attempts": meta["attempts"],
+            "attempts": attempts,
             "attempts_remaining": remaining,
             "errors": vres.get("errors"),
             "normalized": vres.get("normalized"),
@@ -151,6 +155,7 @@ def cmd_run(file_path, deck_name, db_path=None):
                         "Japanese — do not edit contaminated strings in place), overwrite the "
                         "file, and run this command again."),
         }, 0
+    clear_attempts(path)
 
     # Stage 2 gate — Korean pass. Japanese fields are validated and frozen at this point.
     needs_korean = [
@@ -165,9 +170,9 @@ def cmd_run(file_path, deck_name, db_path=None):
             "status": "need_korean",
             "cards_missing_korean": needs_korean,
             "message": ("Japanese fields are validated and FROZEN. Fill 'back_meaning' "
-                        "([뜻], Korean) and optionally 'back_tip' ([Tip], Korean) for the "
-                        "listed cards — do NOT modify any Japanese field — then run this "
-                        "command again."),
+                        "([뜻], Korean), optionally 'back_tip' ([Tip], Korean), and 'tags' "
+                        "for the listed cards — do NOT modify any Japanese field — then run "
+                        "this command again."),
         }
         if vres.get("warnings"):
             result["warnings"] = vres["warnings"]
@@ -200,10 +205,13 @@ def cmd_run(file_path, deck_name, db_path=None):
             if card.get("synced_to_anki") == 1:
                 continue
             try:
-                outcome = anki_connector.push_card(card, deck_name, model_name)
+                outcome, note_id = anki_connector.push_card(card, deck_name, model_name)
                 card["synced_to_anki"] = 1
                 card["status"] = "synced"
-                db_helper.mark_synced(card["root_id"], card["front"], db_path=db_path)
+                if note_id is not None:
+                    card["anki_note_id"] = note_id
+                db_helper.mark_synced(card["root_id"], card["front"],
+                                      note_id=note_id, db_path=db_path)
                 if outcome == "duplicate":
                     duplicate_count += 1
                 else:
@@ -241,7 +249,7 @@ def cmd_run(file_path, deck_name, db_path=None):
     else:
         result["message"] = "All cards validated, persisted to the DB, and synced to Anki."
     if backup.get("written") or backup.get("removed"):
-        result["message"] += " Commit the refreshed data/ partitions on this branch (commit prefix: 'data:')."
+        result["message"] += " The data/ backup was refreshed — remind the user to commit it."
     if tts_warnings:
         result["tts_warnings"] = tts_warnings
     if vres.get("warnings"):
@@ -264,8 +272,9 @@ def cmd_sync_pending(deck_name, db_path=None):
     errors = []
     for card in pending:
         try:
-            outcome = anki_connector.push_card(card, deck_name, model_name)
-            db_helper.mark_synced(card["root_id"], card["front"], db_path=db_path)
+            outcome, note_id = anki_connector.push_card(card, deck_name, model_name)
+            db_helper.mark_synced(card["root_id"], card["front"],
+                                  note_id=note_id, db_path=db_path)
             if outcome == "duplicate":
                 duplicate_count += 1
             else:
@@ -338,17 +347,27 @@ def cmd_doctor(db_path=None):
         file_count, line_count = db_helper.count_export_lines()
         if line_count == db_count:
             add("data_backup", True, f"{db_count} cards ↔ {line_count} JSONL lines ({file_count} partitions)")
+        elif line_count < db_count:
+            add("data_backup", False,
+                f"DB has {db_count} cards but the JSONL export holds {line_count} lines — "
+                f"run db_helper.py --export and commit data/")
         else:
             add("data_backup", False,
-                f"DB has {db_count} cards but JSONL export holds {line_count} lines — "
-                f"run db_helper --export (on the cards branch) and commit data/")
+                f"JSONL export holds {line_count} lines but the DB only has {db_count} cards — "
+                f"run db_helper.py --import to restore the missing cards into the DB")
     except Exception as e:
         add("data_backup", False, str(e))
 
     try:
         anki_connector.invoke("deckNames")
-        model = anki_connector.resolve_note_model()
-        add("anki_connect", True, f"note model: {model}")
+        # Read-only here — doctor reports state, it doesn't mutate the Anki profile.
+        # The model is created/synced by the pipeline at push time.
+        models = anki_connector.invoke("modelNames")
+        if ANKI_NOTE_MODEL in models:
+            add("anki_connect", True, f"note model '{ANKI_NOTE_MODEL}' present")
+        else:
+            add("anki_connect", True,
+                f"note model '{ANKI_NOTE_MODEL}' missing — will be created on first push")
     except Exception as e:
         add("anki_connect", False, str(e))
 
@@ -362,7 +381,7 @@ def cmd_doctor(db_path=None):
         if "anki_connect" in warnings:
             notes.append("Anki is offline — cards persist to the DB and sync later via sync-pending.")
         if "data_backup" in warnings:
-            notes.append("JSONL backup is out of date — export and commit data/ on the cards branch.")
+            notes.append("DB and JSONL backup are out of sync — see the data_backup check detail.")
         result["message"] = "Core environment is healthy. " + " ".join(notes)
     return result, (0 if core_ok else 1)
 
@@ -373,15 +392,17 @@ def _extract_audio_paths(data):
     return {c.get("audio_path") for c in cards if isinstance(c, dict) and c.get("audio_path")}
 
 def cmd_gc_media(db_path=None):
-    """Deletes media files referenced by neither the DB nor any pending working file."""
+    """Deletes media files referenced by neither the DB nor any pending working file.
+    Comparison is by bare file name: the DB stores names (legacy rows may hold absolute
+    paths), and the hash-based naming makes name collisions impossible."""
     conn = db_helper.get_connection(db_path)
-    referenced = {row[0] for row in conn.execute(
+    referenced = {Path(row[0]).name for row in conn.execute(
         "SELECT audio_path FROM cards WHERE audio_path IS NOT NULL AND audio_path != ''")}
     conn.close()
 
     for pending_file in CARDS_PENDING_DIR.glob("*.json"):
         try:
-            referenced |= _extract_audio_paths(load_json(pending_file))
+            referenced |= {Path(p).name for p in _extract_audio_paths(load_json(pending_file))}
         except Exception:
             continue  # unreadable working file — leave its (unknown) media alone
 
@@ -389,7 +410,7 @@ def cmd_gc_media(db_path=None):
     freed_bytes = 0
     kept = 0
     for mp3 in MEDIA_DIR.glob("*.mp3"):
-        if str(mp3) in referenced or str(mp3.resolve()) in referenced:
+        if mp3.name in referenced:
             kept += 1
             continue
         freed_bytes += mp3.stat().st_size
