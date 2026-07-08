@@ -29,7 +29,8 @@ or a full sentence, generate cards and drive the pipeline to completion.
 1. If the user gave a sentence, use your own knowledge to extract the high-value advanced
    vocabulary (N2~N1 or business words/idioms) worth studying, and build a target-word list
    (e.g. `奔走する`, `妥協`).
-2. For each extracted target, check whether it is already registered:
+2. For each extracted target, check whether it is already registered (`--check` is the one
+   helper command you call directly — everything else goes through the driver):
    * `uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --check "<word>"`
 3. If the response reports `exists: true`, inspect `count` and `matches` (a polysemous word may
    already own several sense cards):
@@ -39,13 +40,12 @@ or a full sentence, generate cards and drive the pipeline to completion.
 
 ### [Step 2] Japanese-Only Generation (Pass A — monolingual)
 Produce the **Japanese half** of the card and **nothing Korean at all**, following the
-**[Four Principles]** and **[JSON Output Schema]** below:
-* Fill `front`, `back_reading` (the furigana-annotated Japanese sentence), `target_word`,
-  `root_id`, `pos`, `components`, `collocations`, `is_hyogai`, `tags`.
-* Leave `back_meaning` and `back_tip` **absent** — they come in Pass B.
-* Set `audio_path` to `""`.
-* Every kanji must be Japanese **shinjitai** (新字体, e.g. 圧, 売) and kana only. Do not type any
-  Hangul anywhere in this pass.
+**[Four Principles]** and the **[Card JSON]** reference below:
+* Fill `front`, `back_reading` (the yomigana-annotated Japanese sentence), `target_word`,
+  `root_id`, `pos`, `components`, `collocations`, `is_hyogai`.
+* Leave `back_meaning`, `back_tip`, and `tags` **absent** — they come in Pass B. This pass
+  contains no free-form Hangul at all; the fixed `pos` enum literals are the only exception.
+* Every kanji must be Japanese **shinjitai** (新字体, e.g. 圧, 売) and kana only.
 
 Save the card(s) for one target word to **`cards/pending/<base-form-kanji>.json`**
 (e.g. `cards/pending/躊躇う.json`) — one file per target word, so parallel targets never
@@ -70,14 +70,16 @@ Notes:
   N1/business words; never regenerate because of a warning — at most mention it in the final
   report.
 
-### [Step 4] Korean Explanation (Pass B — monolingual)
-Fill in, for each listed card, **only** these two fields (Korean):
+### [Step 4] Korean Pass (Pass B — monolingual)
+Add to each listed card **only** these fields:
 * `back_meaning`: the context-appropriate Korean meaning ([뜻]).
 * `back_tip`: nuance differences vs. confusable synonyms ([Tip]) — optional but recommended.
+* `tags`: search tags (e.g. `["비즈니스", "N1", "동사"]`). Tags may contain Korean — which
+  is exactly why they belong to this pass, not Pass A.
 
-Do **NOT** touch any Japanese field. Then run the same pipeline command again. The driver
-re-validates, synthesizes TTS, persists to the local DB, pushes to Anki, and archives the
-working file to `cards/done/`.
+Do **NOT** touch any Japanese field, nor any driver-written field (e.g. `status`). Then run
+the same pipeline command again. The driver re-validates, synthesizes TTS, persists to the
+local DB, pushes to Anki, and archives the working file to `cards/done/`.
 
 ### [Step 5] Report
 Report the final summary to the user: cards created, sense splits, sync status, plus any
@@ -87,6 +89,7 @@ Report the final summary to the user: cards created, sense splits, sync status, 
   `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending`
 * `partial` — some cards failed to push; they remain recoverable via `sync-pending`. Show the
   errors.
+* If the driver reports the `data/` backup was refreshed, remind the user to commit it.
 
 ### Utilities (run when relevant, not every time)
 * Environment health check (use when something seems broken, or on first run):
@@ -136,42 +139,104 @@ Report the final summary to the user: cards created, sense splits, sync status, 
 
 ---
 
-## 📊 JSON Output Schema
+## 📊 Card JSON — Field Reference
+
+A working file is `{"cards": [ <card>, ... ]}` — multiple card objects when splitting
+senses (Principle 1). Field ownership is strict:
+
+### Fields you write in Pass A (Japanese only)
+
+| Field | Type | Rule |
+|---|---|---|
+| `front` | string | Example sentence, **plain text** — mark the target word with asterisks: `決断を*躊躇った*。` No HTML; styling lives in the git-managed card CSS. |
+| `back_reading` | string | The **same sentence** with Anki bracket furigana on **every** kanji word: `決断[けつだん]を 躊躇[ためら]った`. Okurigana stays outside the brackets; put a half-width space immediately before each annotated word (the renderer consumes it; none needed at the sentence start). |
+| `target_word` | string | The exact inflected form as it appears in `front` |
+| `root_id` | string | Dictionary base form, `基本形漢字(基本形よみがな)` |
+| `pos` | string | Enum string per Principle 4 (fixed Korean literals) |
+| `components` | string[] | Idioms only: morpheme base forms; otherwise `[]` |
+| `collocations` | string[] | Common chunks featuring the target word; `[]` if none |
+| `is_hyogai` | boolean | `true` when the word uses non-jōyō kanji |
+
+### Fields you write in Pass B (Korean, only after `need_korean`)
+
+| Field | Type | Rule |
+|---|---|---|
+| `back_meaning` | string | Context-appropriate Korean meaning ([뜻]) |
+| `back_tip` | string | Korean nuance tip vs. confusable synonyms ([Tip]) — optional |
+| `tags` | string[] | Search tags, Korean allowed (e.g. `["비즈니스", "N1", "동사"]`) |
+
+### Driver-managed — never write or edit
+
+`audio_path`, `status`, `synced_to_anki`, `anki_note_id`, and the retry sidecar
+`cards/pending/.attempts.json`. The Anki note fields, templates, and CSS are likewise
+code: the pipeline creates the repo-owned note model in Anki and syncs it from the
+git-managed `anki_model/` files — the `*…*` marker becomes a styled span and the
+bracket furigana becomes ruby text at push time. Never put styling or HTML in card
+content.
+
+## ✍️ Examples
+
+**Example 1 — ordinary verb with a collocation.** Pass A working file
+(`cards/pending/躊躇う.json`):
 
 ```json
 {
   "cards": [
     {
-      "front": "타겟 단어가 반드시 <span style='color:blue'><b>단어</b></span> 태그로 감싸진 일본어 예문.",
-      "back_reading": "후리가나가 병기된 일본어 예문 (예: 決断を躊躇った(ためらった)。) — 일본어만",
-      "back_meaning": "[Pass B] 해당 문맥에 맞는 한국어 뜻",
-      "back_tip": "[Pass B] 헷갈리는 유의어와의 뉘앙스 차이 한국어 설명 (선택)",
-      "target_word": "문장에 쓰인 타겟 단어의 실제 활용 형태 (예: 躊躇った)",
-      "root_id": "기본형한자(기본형요미가나) (예: 躊躇う(ためらう))",
-      "pos": "Enum 규칙에 맞춘 품사 정보 (예: 동사(1그룹/타동사) - 활용 없음)",
-      "components": ["관용구일 경우 형태소 분리 배열"],
-      "collocations": ["연어가 있을 경우 배열 저장"],
-      "is_hyogai": false,
-      "tags": ["비즈니스", "N1", "동사" 등 검색용 태그 배열],
-      "audio_path": ""
+      "front": "緊迫した交渉の場において、彼は決断を*躊躇った*。",
+      "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。",
+      "target_word": "躊躇った",
+      "root_id": "躊躇う(ためらう)",
+      "pos": "동사(1그룹/자동사) - 활용 없음",
+      "components": [],
+      "collocations": ["決断を躊躇う"],
+      "is_hyogai": true
     }
   ]
 }
 ```
 
-The Anki-facing back string (`reading<br><br>[뜻] …<br><br>[Tip] …`) is composed by the
-pipeline at push time — never write it yourself.
+After the driver answers `need_korean`, add **only** the Pass B keys to that same card —
+the file now also carries driver-written keys such as `status`; leave them untouched:
+
+```json
+"back_meaning": "긴박한 협상 자리에서 그는 결단을 망설였다.",
+"back_tip": "'躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스. 사양해서 삼가는 '遠慮する'와 구별됨.",
+"tags": ["비즈니스", "N1", "동사"]
+```
+
+**Example 2 — idiom (Pass A).** The whole fixed expression is the `root_id`; its morphemes
+go to `components`:
+
+```json
+{
+  "cards": [
+    {
+      "front": "順調な交渉に*水を差す*ような発言は控えてほしい。",
+      "back_reading": "順調[じゅんちょう]な 交渉[こうしょう]に 水[みず]を 差[さ]すような 発言[はつげん]は 控[ひか]えてほしい。",
+      "target_word": "水を差す",
+      "root_id": "水を差す(みずをさす)",
+      "pos": "관용구",
+      "components": ["水", "差す"],
+      "collocations": [],
+      "is_hyogai": false
+    }
+  ]
+}
+```
 
 ## ⚠️ CRITICAL
 - **Two-pass, single-language decode.** Never generate Japanese and Korean in the same pass.
-  Japanese fields (Pass A) first; `back_meaning`/`back_tip` (Pass B) only after the pipeline
-  answers `need_korean`.
+  Japanese fields (Pass A) first; `back_meaning`/`back_tip`/`tags` (Pass B) only after the
+  pipeline answers `need_korean`.
 - **Language isolation is schema-level.** `front`, `back_reading`, `target_word`, `root_id`,
   `components`, `collocations` must contain **only** Japanese shinjitai (圧, 売) and kana — never
   Hangul. Old-form/Korean-style hanja (壓, 賣) are auto-normalized by the pipeline; Hangul is a
   hard error that requires regenerating that field.
 - **On failure, regenerate — do not patch.** When a Hangul leak is reported, discard and rewrite
   that field from `root_id`; editing the contaminated string in place re-introduces the mix.
-- **Korean lives only in `back_meaning` / `back_tip`.** Nowhere else.
+- **Free-form Korean lives only in `back_meaning` / `back_tip` / `tags` — all Pass B.**
+  Nowhere else; the `pos` enum literals are fixed strings, not prose.
 - **Let the driver drive.** One file per target word under `cards/pending/`; react only to the
-  pipeline's `status`; never bypass it by calling the helper scripts directly.
+  pipeline's `status`; never bypass it by calling the helper scripts directly, and never
+  touch driver state (`status`, `audio_path`, sync flags, `cards/pending/.attempts.json`).

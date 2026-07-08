@@ -12,8 +12,8 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 {
   "cards": [
     {
-      "front": "緊迫した交渉の場において、彼は決断を<span style='color:blue'><b>躊躇った</b></span>。",
-      "back_reading": "緊迫した交渉の場において、彼は決断を躊躇った(ためらった)。",
+      "front": "緊迫した交渉の場において、彼は決断を*躊躇った*。",
+      "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。",
       "back_meaning": "긴박한 협상 자리에서 그는 결단을 망설였다.",
       "back_tip": "'躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스이며, 주로 부정형이나 과거형으로 많이 쓰입니다.",
       "target_word": "躊躇った",
@@ -23,22 +23,23 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
       "collocations": [
         "決断を躊躇う"
       ],
-      "is_hyogai": false,
+      "is_hyogai": true,
       "tags": [
         "비즈니스",
         "N1",
         "동사"
-      ],
-      "audio_path": ""
+      ]
     }
   ]
 }
 ```
 
+> `躊躇う` sets `is_hyogai: true` because 躊 and 躇 are both non-jōyō kanji.
+
 ### Field Descriptions
 
-- **`front`** *(string, Japanese-only)*: The Japanese example sentence containing the target word wrapped in HTML tags: `<span style='color:blue'><b>[word]</b></span>`. Must contain strictly Japanese characters.
-- **`back_reading`** *(string, Japanese-only)*: The example sentence annotated with readings/furigana. Generated in Pass A together with the other Japanese fields.
+- **`front`** *(string, Japanese-only)*: The Japanese example sentence, **plain text**, with the target word marked as `*word*`. No HTML — the pipeline converts the marker to a styled span at push time, and the styling itself lives in the git-managed note model CSS (`anki_model/style.css`).
+- **`back_reading`** *(string, Japanese-only)*: The same sentence with Anki bracket furigana on **every** kanji word (`決断[けつだん]を 躊躇[ためら]った`) — okurigana outside the brackets, a half-width space before each annotated word. Rendered as ruby text by the `{{furigana:Reading}}` template filter. Generated in Pass A together with the other Japanese fields.
 - **`back_meaning`** *(string, Korean-only)*: The context-appropriate Korean meaning ([뜻]). Filled in Pass B only.
 - **`back_tip`** *(string, Korean-only, optional)*: Usage-nuance explanation vs. confusable synonyms ([Tip]). Filled in Pass B only.
 
@@ -49,8 +50,8 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 - **`components`** *(array of strings, Japanese-only)*: If the card is an idiom (e.g., `腹を割る`), contains individual morpheme dictionary base forms (e.g. `["腹", "割る"]`). Empty for non-idioms.
 - **`collocations`** *(array of strings, Japanese-only)*: A list of common collocations (word pairings) featuring the target word.
 - **`is_hyogai`** *(boolean)*: True if the target word contains characters outside the standard Jōyō Kanji table.
-- **`tags`** *(array of strings)*: A list of tags for search and filtering.
-- **`audio_path`** *(string)*: File path to the synthesized speech audio file. Set to an empty string `""` initially and updated during the TTS step.
+- **`tags`** *(array of strings)*: A list of tags for search and filtering. Korean is allowed here, so tags are filled in **Pass B** together with the other Korean fields.
+- **`audio_path`**, **`status`**, **`synced_to_anki`**, **`anki_note_id`**: driver-managed fields — the pipeline writes them; generation must never set or edit them.
 
 ---
 
@@ -60,7 +61,7 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 - **De-duplication of Polysemes**: Do not list multiple meanings on a single card. For target words with distinct definitions, create multiple card objects in the array. This keeps review sessions focused.
 - **Idioms vs. Collocations**:
   - **Idioms** (e.g., `腹を割る`, `水を差す`): Fixed expressions where words create a completely new meaning. Use the entire phrase as `root_id`. Provide individual morphemes in the `components` list (e.g. `["腹", "割る"]`).
-  - **Collocations** (e.g., `妥協点を見出す`, `責任を追及하는`): Regular associations where words keep their original meanings. Do not create an ID for the whole block. Set the main advanced word as the `root_id` and list related expressions in `collocations`.
+  - **Collocations** (e.g., `妥協点を見出す`, `責任を追及する`): Regular associations where words keep their original meanings. Do not create an ID for the whole block. Set the main advanced word as the `root_id` and list related expressions in `collocations`.
 
 ### 2. Sentence Engineering
 - **Conciseness**: Target sentences should be short (1–2 clauses, 40–50 characters max).
@@ -75,7 +76,7 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 
 ### 4. POS (Part of Speech) Enum Restrictions
 The `pos` attribute must conform to: `MainPOS(SubPOS) - GrammarTag`
-- **Main POS**: `명사`, `동사`, `い형용사`, `나형용사`, `부사`, `접속사`, `연체사`, `관용구`
+- **Main POS**: `명사`, `동사`, `い형용사`, `な형용사`, `부사`, `접속사`, `연체사`, `관용구`
 - **Sub-POS**: `1그룹`, `2그룹`, `3그룹`, `자동사`, `타동사`, `대명사`, `고유명사`, `수사`, `조동사적명사`
 - **Grammar Tags**: `수동`, `사역`, `사역수동`, `가정`, `명령`, `존경어`, `겸양어`, `정중어`, `활용 없음`
 
@@ -86,8 +87,8 @@ The `pos` attribute must conform to: `MainPOS(SubPOS) - GrammarTag`
 To prevent index pollution and font display issues, adhere to strict separation of Japanese and Korean contents:
 
 - **Japanese-Only Fields**:
-  - `front` (only exceptions are HTML tags: `<span style='color:blue'><b>...</b></span>`)
-  - `back_reading`
+  - `front` (only exception is the `*…*` target marker)
+  - `back_reading` (only exception is the `[…]` bracket furigana)
   - `target_word`
   - `root_id`
   - `components`
