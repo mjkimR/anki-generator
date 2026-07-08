@@ -10,8 +10,10 @@ sys.path.append(str(src_dir))
 from anki_generator.skills.anki_card_generator.scripts.validator import (
     validate_pos,
     validate_korean_mix,
+    validate_korean_presence,
     validate_yomigana,
-    validate_front_markup,
+    validate_front_marker,
+    validate_reading_furigana,
     validate_card_json,
     katakana_to_hiragana,
     normalize_shinjitai,
@@ -81,6 +83,32 @@ def test_validate_korean_mix_back_reading_is_japanese_only():
     assert len(errors) == 1 and "back_reading" in errors[0]
 
 
+def test_korean_presence_warns_on_japanese_meaning():
+    # Pass B answered in the wrong language — back_meaning holds Japanese, not Korean.
+    warnings = validate_korean_presence({"back_meaning": "妥協すること"})
+    assert len(warnings) == 1 and "back_meaning" in warnings[0]
+
+def test_korean_presence_accepts_korean_and_absence():
+    assert validate_korean_presence({"back_meaning": "타협"}) == []
+    assert validate_korean_presence({}) == []  # Pass A: field not filled yet
+
+def test_korean_presence_is_warning_not_error(tmp_path):
+    # End-to-end: a Hangul-less back_meaning must stay valid:true (warning only).
+    card_file = tmp_path / "card.json"
+    card_file.write_text(json.dumps({
+        "cards": [{
+            "front": "彼は*妥協*を拒んだ。",
+            "back_reading": "彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。",
+            "back_meaning": "compromise",
+            "target_word": "妥協",
+            "root_id": "妥協(だきょう)",
+            "pos": "명사",
+        }]
+    }, ensure_ascii=False), encoding="utf-8")
+    result = validate_card_json(str(card_file))
+    assert result["valid"] is True
+    assert any("back_meaning" in w for entry in result["warnings"] for w in entry["warnings"])
+
 def test_normalize_shinjitai_joyokanji():
     # Official jōyō kyūjitai -> shinjitai (covered by joyokanji).
     text, changes = normalize_shinjitai("壓迫と賣買と廣告")
@@ -128,8 +156,8 @@ def test_yomigana_warning_does_not_fail_validation(tmp_path):
     card_file = tmp_path / "card.json"
     card_file.write_text(json.dumps({
         "cards": [{
-            "front": "彼は<span style='color:blue'><b>妥協</b></span>を拒んだ。",
-            "back_reading": "かれはだきょうをこばんだ。",
+            "front": "彼は*妥協*を拒んだ。",
+            "back_reading": "彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。",
             "target_word": "妥協",
             "root_id": "妥協(だきょお)",  # typo reading -> warning only
             "pos": "명사",
@@ -139,19 +167,56 @@ def test_yomigana_warning_does_not_fail_validation(tmp_path):
     assert result["valid"] is True
     assert "warnings" in result
 
-def test_front_markup_missing_span():
+def test_front_marker_missing():
     card = {"front": "彼は妥協を拒んだ。", "target_word": "妥協"}
-    errors = validate_front_markup(card)
-    assert len(errors) == 1 and "span" in errors[0]
+    errors = validate_front_marker(card)
+    assert len(errors) == 1 and "*asterisks*" in errors[0]
 
-def test_front_markup_target_mismatch():
-    card = {"front": "彼は<span style='color:blue'><b>躊躇</b></span>した。", "target_word": "妥協"}
-    errors = validate_front_markup(card)
+def test_front_marker_rejects_legacy_html():
+    # The old span markup carries no *marker* — it must be reported, not accepted.
+    card = {"front": "彼は<span style='color:blue'><b>妥協</b></span>を拒んだ。", "target_word": "妥協"}
+    errors = validate_front_marker(card)
+    assert len(errors) == 1 and "no HTML" in errors[0]
+
+def test_front_marker_target_mismatch():
+    card = {"front": "彼は*躊躇*した。", "target_word": "妥協"}
+    errors = validate_front_marker(card)
     assert len(errors) == 1 and "妥協" in errors[0]
 
-def test_front_markup_valid():
-    card = {"front": "彼は<span style='color:blue'><b>妥協</b></span>を拒んだ。", "target_word": "妥協"}
-    assert validate_front_markup(card) == []
+def test_front_marker_valid():
+    card = {"front": "彼は*妥協*を拒んだ。", "target_word": "妥協"}
+    assert validate_front_marker(card) == []
+
+def test_furigana_full_coverage_passes():
+    card = {
+        "front": "彼は*妥協*を拒んだ。",
+        "back_reading": "彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。",
+    }
+    assert validate_reading_furigana(card) == []
+
+def test_furigana_missing_bracket_is_error():
+    card = {
+        "front": "彼は*妥協*を拒んだ。",
+        "back_reading": "彼[かれ]は妥協を 拒[こば]んだ。",  # 妥協 unannotated
+    }
+    errors = validate_reading_furigana(card)
+    assert len(errors) == 1 and "妥協" in errors[0]
+
+def test_furigana_base_must_be_kanji_only():
+    # Without a space, Anki binds the brackets to everything since the last space —
+    # し合[あ] would render the ruby over し合.
+    card = {"front": "*話し合おう*。", "target_word": "話し合おう",
+            "back_reading": "話[はな]し合[あ]おう。"}
+    errors = validate_reading_furigana(card)
+    assert any("し合" in e for e in errors)
+
+def test_furigana_sentence_mismatch_is_error():
+    card = {
+        "front": "彼は*妥協*を拒んだ。",
+        "back_reading": "彼[かれ]は 譲歩[じょうほ]を 拒[こば]んだ。",  # different sentence
+    }
+    errors = validate_reading_furigana(card)
+    assert len(errors) == 1 and "markers removed" in errors[0]
 
 def test_normalize_card_across_fields():
     card = {

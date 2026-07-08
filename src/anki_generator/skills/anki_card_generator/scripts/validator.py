@@ -213,20 +213,75 @@ def validate_yomigana(card):
 
     return ([], [])
 
-def validate_front_markup(card):
-    """Checks that 'front' highlights the target word with the required span/bold markup
-    and that the highlighted text matches target_word."""
+def validate_korean_presence(card):
+    """Reverse language check for Pass B: back_meaning is the Korean meaning — if it
+    contains no Hangul at all, the Korean pass probably answered in the wrong language.
+    Warning only (never blocks): short loanword glosses can legitimately lack Hangul."""
+    meaning = card.get('back_meaning')
+    if not isinstance(meaning, str) or not meaning:
+        return []
+    if not re.search(r'[가-힣]', meaning):
+        return [f"'back_meaning' ('{meaning}') contains no Hangul — it should be a Korean "
+                "explanation ([뜻]). Double-check the language. Informational only."]
+    return []
+
+# Generated cards are plain text: the target word is marked as *word* (converted to a
+# styled span at push time) and readings use Anki bracket furigana (決断[けつだん]).
+TARGET_MARKER_RE = re.compile(r'\*([^*\n]+)\*')
+KANJI_RUN_RE = re.compile(r'[々一-鿿]+')  # CJK unified ideographs + 々
+FURIGANA_BASE_RE = re.compile(r'([^\s\[\]]+)\[')
+
+def validate_front_marker(card):
+    """Checks that 'front' marks the target word as *word* (no HTML) and that the
+    marked text matches target_word."""
     errors = []
     front = card.get('front')
     target = card.get('target_word')
     if not isinstance(front, str) or not isinstance(target, str) or not front or not target:
         return errors  # absence is reported by the required-fields check
 
-    spans = re.findall(r"<span[^>]*>\s*<b>(.*?)</b>\s*</span>", front)
-    if not spans:
-        errors.append("Field 'front' must wrap the target word in <span style='color:blue'><b>...</b></span> markup.")
-    elif target not in spans:
-        errors.append(f"target_word '{target}' does not match the highlighted text in 'front' (found: {spans}).")
+    marked = TARGET_MARKER_RE.findall(front)
+    if not marked:
+        errors.append("Field 'front' must mark the target word with *asterisks* "
+                      "(e.g. 決断を*躊躇った*。) — plain text, no HTML tags.")
+    elif target not in marked:
+        errors.append(f"target_word '{target}' does not match the marked text in 'front' (found: {marked}).")
+    return errors
+
+def validate_reading_furigana(card):
+    """Checks back_reading's bracket furigana mechanically:
+    (a) every kanji run is immediately followed by a [reading];
+    (b) each bracket binds to a kanji-only run — Anki's furigana filter attaches the
+        brackets to everything since the previous space, so mixed bases like し合[あ]
+        need a space: し 合[あ];
+    (c) with brackets and spaces removed, back_reading is the same sentence as front
+        with its markers removed."""
+    errors = []
+    front = card.get('front')
+    reading = card.get('back_reading')
+    if not isinstance(reading, str) or not reading:
+        return errors  # absence is reported by the required-fields check
+
+    missing = [m.group(0) for m in KANJI_RUN_RE.finditer(reading)
+               if m.end() >= len(reading) or reading[m.end()] != '[']
+    if missing:
+        errors.append(f"back_reading is missing bracket furigana for: {missing}. Annotate "
+                      "every kanji word like 決断[けつだん], okurigana outside the brackets.")
+
+    impure = [m.group(1) for m in FURIGANA_BASE_RE.finditer(reading)
+              if not KANJI_RUN_RE.fullmatch(m.group(1))]
+    if impure:
+        errors.append(f"Furigana brackets must attach to a kanji-only run, got: {impure}. "
+                      "Put a half-width space before the annotated word "
+                      "(e.g. 話[はな]し 合[あ]おう) — the renderer consumes the space.")
+
+    if isinstance(front, str) and front and not missing and not impure:
+        plain_reading = re.sub(r'\[[^\]]*\]', '', reading).replace(' ', '').replace('　', '')
+        plain_front = TARGET_MARKER_RE.sub(r'\1', front).replace(' ', '').replace('　', '')
+        if plain_reading != plain_front:
+            errors.append("back_reading with brackets removed must be exactly the front "
+                          "sentence with markers removed — regenerate back_reading from "
+                          "front by inserting furigana only.")
     return errors
 
 def validate_card_json(json_file_path, auto_fix=False):
@@ -282,8 +337,8 @@ def validate_card_json(json_file_path, auto_fix=False):
             if mix_errs:
                 card_errors.extend(mix_errs)
 
-            # 4. Target-word highlight markup check
-            markup_errs = validate_front_markup(card)
+            # 4. Target-word marker and bracket-furigana checks (all mechanical)
+            markup_errs = validate_front_marker(card) + validate_reading_furigana(card)
             if markup_errs:
                 card_errors.extend(markup_errs)
 
@@ -292,11 +347,14 @@ def validate_card_json(json_file_path, auto_fix=False):
             yomi_errs, yomi_warnings = validate_yomigana(card)
             if yomi_errs:
                 card_errors.extend(yomi_errs)
-            if yomi_warnings:
+
+            # 6. Reverse language check on the Korean commentary (warning only).
+            card_warnings = yomi_warnings + validate_korean_presence(card)
+            if card_warnings:
                 all_warnings.append({
                     "card_index": idx,
                     "root_id": card.get("root_id"),
-                    "warnings": yomi_warnings
+                    "warnings": card_warnings
                 })
 
             if card_errors:
