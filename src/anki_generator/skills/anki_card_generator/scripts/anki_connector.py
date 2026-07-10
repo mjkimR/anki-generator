@@ -81,6 +81,16 @@ def upload_audio_to_anki(audio_path):
     result_filename = invoke("storeMediaFile", filename=file_name, data=file_content_base64)
     return result_filename
 
+def update_note_audio(note_id, audio_path):
+    """Backfills the Audio field of an existing note: uploads the media file, then
+    updates only that field via updateNoteFields — every other field stays untouched.
+    First piece of the shared note-update plumbing that card-edit sync and leech
+    rescue will generalize later."""
+    audio_filename = upload_audio_to_anki(audio_path)
+    invoke("updateNoteFields",
+           note={"id": note_id, "fields": {"Audio": f"[sound:{audio_filename}]"}})
+    return audio_filename
+
 def push_card(card, deck_name, model_name):
     """Pushes a single card as an Anki note. Returns ('synced', note_id) or
     ('duplicate', None); raises on any other failure so the caller can record a
