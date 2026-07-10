@@ -157,9 +157,11 @@ def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     assert result["anki_online"] is False
     assert "sync-pending" in result["message"]
 
-    # Persisted but pending — the recovery contract.
+    # Persisted but pending — the recovery contract. No audio yet: TTS happens at
+    # push time, on whichever machine pushes.
     pending = db_helper.fetch_pending(db_path=db)
     assert len(pending) == 1
+    assert pending[0]["audio_path"] == ""
 
     # Anki comes back online -> sync-pending drains the queue.
     fake_anki_online(monkeypatch)
@@ -168,6 +170,230 @@ def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     assert result["status"] == "done"
     assert result["synced_count"] == 1
     assert db_helper.fetch_pending(db_path=db) == []
+
+def test_online_run_drains_backlog(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    fake_tts_ok(monkeypatch)
+    # An earlier Anki-offline session left a different word pending in the DB.
+    db_helper.insert_card_records([make_japanese_card(
+        front="彼は*決断*を下した。",
+        back_reading="彼[かれ]は 決断[けつだん]を 下[くだ]した。",
+        target_word="決断", root_id="決断(けつだん)", back_meaning="결단")], db_path=db)
+    fake_anki_online(monkeypatch)
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+
+    result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert code == 0
+    assert result["status"] == "done"
+    assert result["synced_count"] == 1    # the working file's card
+    assert result["backlog_synced"] == 1  # plus the stale pending card, auto-drained
+    assert db_helper.fetch_pending(db_path=db) == []
+
+def fake_tts_file(monkeypatch, tmp_path):
+    """Backfill uploads the synthesized file to Anki, so the fake must exist on disk."""
+    mp3 = tmp_path / "tts_backfilled.mp3"
+    mp3.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize",
+                        lambda text, output_path=None, voice=None:
+                        {"success": True, "output_path": str(mp3)})
+    return mp3
+
+def test_backfill_audio_updates_db_and_anki_note(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    fake_tts_file(monkeypatch, tmp_path)
+    db_helper.insert_card_records([make_japanese_card(
+        back_meaning="타협", synced_to_anki=1, anki_note_id=777)], db_path=db)
+
+    captured = {}
+    def fake_invoke(action, **params):
+        if action == "deckNames":
+            return ["TestDeck"]
+        if action == "storeMediaFile":
+            return params["filename"]
+        if action == "updateNoteFields":
+            captured["note"] = params["note"]
+            return None
+        raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
+
+    result, code = pipeline.cmd_backfill_audio(db_path=db)
+    assert code == 0
+    assert result["status"] == "done"
+    assert result["backfilled"] == 1 and result["notes_updated"] == 1
+    # Only the Audio field is touched on the existing note.
+    assert captured["note"] == {"id": 777, "fields": {"Audio": "[sound:tts_backfilled.mp3]"}}
+
+    conn = db_helper.get_connection(db)
+    assert conn.execute("SELECT audio_path FROM cards").fetchone()[0] == "tts_backfilled.mp3"
+    conn.close()
+
+def test_backfill_audio_leaves_pending_cards_to_push_time(tmp_path, monkeypatch):
+    # Audio is synthesized at push time — backfill only repairs synced-but-silent
+    # notes, and never spends TTS on cards that haven't reached Anki yet.
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    fake_anki_offline(monkeypatch)
+    def boom(*args, **kwargs):
+        raise AssertionError("no TTS expected for skipped cards")
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize", boom)
+    db_helper.insert_card_records([
+        make_japanese_card(back_meaning="타협", synced_to_anki=1, anki_note_id=777),
+        make_japanese_card(front="彼は*決断*を下した。",
+                           back_reading="彼[かれ]は 決断[けつだん]を 下[くだ]した。",
+                           target_word="決断", root_id="決断(けつだん)", back_meaning="결단"),
+    ], db_path=db)
+
+    result, code = pipeline.cmd_backfill_audio(db_path=db)
+    assert code == 0
+    assert result["backfilled"] == 0 and result["notes_updated"] == 0
+    reasons = {c["root_id"]: c["reason"] for c in result["skipped"]}
+    assert "push time" in reasons["決断(けつだん)"]
+    assert "open Anki" in reasons["妥協(だきょう)"]
+    # Both rows untouched — a later Anki-online run still finds the synced one.
+    assert len(db_helper.fetch_missing_audio(db_path=db)) == 2
+
+def test_backfill_audio_skips_synced_without_note_id(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    def fake_invoke(action, **params):
+        if action == "deckNames":
+            return ["TestDeck"]
+        raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
+    db_helper.insert_card_records([make_japanese_card(
+        back_meaning="타협", synced_to_anki=1)], db_path=db)
+
+    result, code = pipeline.cmd_backfill_audio(db_path=db)
+    assert code == 0
+    assert result["backfilled"] == 0
+    assert "note id" in result["skipped"][0]["reason"]
+
+def test_sync_pending_resynthesizes_missing_audio(tmp_path, monkeypatch):
+    # media/ is machine-local while cards travel via git: a pending card pulled onto
+    # another machine references an mp3 that isn't here. The deterministic cache key
+    # lets the push re-synthesize it instead of syncing a silent note.
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(db_helper, "MEDIA_DIR", media)
+    db_helper.insert_card_records([make_japanese_card(
+        back_meaning="타협", audio_path="tts_missing.mp3")], db_path=db)
+
+    regenerated = media / "tts_missing.mp3"
+    def fake_synth(text, output_path=None, voice=None):
+        regenerated.write_bytes(b"audio")
+        return {"success": True, "output_path": str(regenerated)}
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize", fake_synth)
+
+    captured = {}
+    def fake_invoke(action, **params):
+        if action == "deckNames":
+            return ["TestDeck"]
+        if action == "modelNames":
+            return []
+        if action == "createModel":
+            return {}
+        if action == "storeMediaFile":
+            return params["filename"]
+        if action == "addNote":
+            captured["fields"] = params["note"]["fields"]
+            return 555
+        raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
+
+    result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
+    assert code == 0
+    assert result["synced_count"] == 1
+    assert "tts_warnings" not in result
+    assert captured["fields"]["Audio"] == "[sound:tts_missing.mp3]"
+
+def test_sync_pending_clears_audio_when_resynthesis_fails(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    media = tmp_path / "media"
+    media.mkdir()
+    monkeypatch.setattr(db_helper, "MEDIA_DIR", media)
+    db_helper.insert_card_records([make_japanese_card(
+        back_meaning="타협", audio_path="tts_missing.mp3")], db_path=db)
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize",
+                        lambda text, output_path=None, voice=None:
+                        {"success": False, "error": "no network"})
+    fake_anki_online(monkeypatch)
+
+    result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
+    assert code == 0
+    assert result["synced_count"] == 1  # pushed silent rather than stuck
+    assert result["tts_warnings"][0]["root_id"] == "妥協(だきょう)"
+    # audio_path is cleared, so the card is visible to backfill-audio later.
+    assert [c["root_id"] for c in db_helper.fetch_missing_audio(db_path=db)] \
+        == ["妥協(だきょう)"]
+
+def test_doctor_flags_synced_cards_missing_from_anki(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    db_helper.insert_card_records([
+        make_japanese_card(back_meaning="타협", synced_to_anki=1, anki_note_id=111),
+    ], db_path=db)
+
+    def fake_invoke(action, **params):
+        if action == "deckNames":
+            return ["TestDeck"]
+        if action == "modelNames":
+            return [pipeline.ANKI_NOTE_MODEL]
+        if action == "findNotes":
+            return [222]  # some other note — 111 is gone / not synced to this machine
+        raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
+
+    result, code = pipeline.cmd_doctor(db_path=db)
+    assert code == 0
+    assert result["status"] == "ok"  # drift is a warning, not an env failure
+    notes_check = next(c for c in result["checks"] if c["check"] == "anki_notes")
+    assert notes_check["ok"] is False
+    assert "1 of 1" in notes_check["detail"]
+
+def test_generation_only_run_skips_anki_and_tts(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
+    def boom(*args, **kwargs):
+        raise AssertionError("no Anki/TTS work expected on a generation-only machine")
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize", boom)
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", boom)
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+
+    result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert code == 0
+    assert result["status"] == "done"
+    assert result["anki_online"] is False
+    assert "generation-only" in result["message"]
+    # Persisted as pending, no audio — the pushing machine synthesizes later.
+    pending = db_helper.fetch_pending(db_path=db)
+    assert len(pending) == 1 and pending[0]["audio_path"] == ""
+    assert not path.exists()  # archived as usual
+    assert result["backup"]["total_cards"] == 1  # JSONL mirror refreshed
+
+def test_generation_only_blocks_sync_and_backfill(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
+    result, code = pipeline.cmd_sync_pending("TestDeck", db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "generation-only" in result["message"]
+    result, code = pipeline.cmd_backfill_audio(db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "generation-only" in result["message"]
+
+def test_doctor_generation_only_marks_anki_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
+    def boom(*args, **kwargs):
+        raise AssertionError("no AnkiConnect calls expected")
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", boom)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+    assert code == 0 and result["status"] == "ok"
+    anki = next(c for c in result["checks"] if c["check"] == "anki_connect")
+    assert anki["ok"] is True and "ANKI_ENABLED" in anki["detail"]
+    assert not any(c["check"] == "anki_notes" for c in result["checks"])
+    assert "message" not in result  # disabled is intentional, not a warning
 
 def test_gc_media_removes_only_unreferenced(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
