@@ -11,7 +11,8 @@ or a full sentence, generate cards and drive the pipeline to completion.
 
 > **Division of labor.** You (the agent) do exactly two things: **generate content** and **react
 > to the pipeline's structured responses**. All control flow — step ordering, the retry cap,
-> validation, TTS, DB persistence, Anki sync — is enforced in code by `pipeline.py`. Do not run
+> validation, DB persistence, Anki sync (with TTS at push time) — is enforced in code by
+> `pipeline.py`. Do not run
 > the individual helper scripts (validator/tts/connector/db-insert) yourself; the driver calls
 > them in the right order with the right preconditions.
 
@@ -78,22 +79,32 @@ Add to each listed card **only** these fields:
   is exactly why they belong to this pass, not Pass A.
 
 Do **NOT** touch any Japanese field, nor any driver-written field (e.g. `status`). Then run
-the same pipeline command again. The driver re-validates, synthesizes TTS, persists to the
-local DB, pushes to Anki, and archives the working file to `cards/done/`.
+the same pipeline command again. The driver re-validates, persists to the local DB, pushes
+to Anki (synthesizing TTS just before each note lands), and archives the working file to
+`cards/done/`.
 
 ### [Step 5] Report
 Report the final summary to the user: cards created, sense splits, sync status, plus any
 `warnings` or `tts_warnings`. Special cases:
-* `anki_online: false` — cards are safely persisted in the DB; tell the user to open Anki and
-  then run:
+* `anki_online: false` — cards are safely persisted in the DB. They sync automatically on
+  the next run with Anki open; to push immediately instead, the user can open Anki and run:
   `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending`
+  (If the driver message says this machine is generation-only — `ANKI_ENABLED=0` — just
+  remind the user to commit `data/`; an Anki machine picks the cards up from git.)
+* `backlog_synced` — cards left pending by earlier Anki-offline sessions were pushed along
+  with this run's; mention the count.
 * `partial` — some cards failed to push; they remain recoverable via `sync-pending`. Show the
   errors.
+* `tts_warnings` — those cards were created without audio; recover later (network required)
+  via:
+  `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py backfill-audio`
 * If the driver reports the `data/` backup was refreshed, remind the user to commit it.
 
 ### Utilities (run when relevant, not every time)
 * Environment health check (use when something seems broken, or on first run):
   `uv run python .../scripts/pipeline.py doctor`
+* Backfill audio for cards created without it (earlier `tts_warnings`):
+  `uv run python .../scripts/pipeline.py backfill-audio`
 * Clean up orphaned audio files (occasionally, or when the user asks):
   `uv run python .../scripts/pipeline.py gc-media`
 

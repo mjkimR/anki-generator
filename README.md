@@ -26,8 +26,19 @@ The gitignored SQLite DB (`anki_generator.db`) is the source of truth. Every pip
 refreshes a git-friendly mirror of it under `data/` — deterministic, monthly-partitioned
 JSONL whose diffs stay minimal. Commit those files to keep your card history in git.
 
-- **Restore is automatic**: on a fresh clone, the first DB access rebuilds
-  `anki_generator.db` from `data/` (manual equivalent: `db_helper.py --import`).
+- **Restore/merge is automatic**: a fresh clone rebuilds `anki_generator.db` from
+  `data/`, and after a `git pull` the next DB access merges in cards pulled from
+  another machine (manual equivalent: `db_helper.py --import`).
+- **Multiple machines work**: cards travel via git, the Anki collection via AnkiWeb;
+  exports only ever add to `data/`, and audio is synthesized at push time by whichever
+  machine pushes. A machine without Anki sets `ANKI_ENABLED=0` in its `.env`
+  (generation-only mode: commit `data/` and you're done). One rule: on a new Anki
+  machine, sync Anki once before the first push. See `docs/architecture.md` →
+  *Multiple Machines*.
+- **Anki can stay closed**: cards persist locally as pending and the next pipeline run
+  with Anki open pushes them automatically (`pipeline.py sync-pending` drains manually;
+  `pipeline.py backfill-audio` repairs cards whose TTS failed). See
+  `docs/architecture.md` → *Offline Behavior*.
 - `pipeline.py doctor` verifies the DB and the JSONL mirror stay in sync and tells you
   whether `--export` or `--import` is the right direction to fix a drift.
 

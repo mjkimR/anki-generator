@@ -127,6 +127,39 @@ Shape: one skill (SKILL.md) + one helper script (`practice_helper.py`: `weak-wor
 
 ---
 
+## Deferred: Unattended Anki Sync (reviewed 2026-07-10, build only when needed)
+
+Goal: "push JSONL from anywhere, cards reach the phone" with **no PC involved**. Two
+insights from the review: (a) the sync side is fully deterministic — it needs an
+execution environment with Anki, not a cloud *agent*; (b) Anki's backend is a pip
+library (`anki`) that opens collections headlessly and **contains the AnkiWeb sync
+client** — no AnkiConnect/desktop app required.
+
+- **Step 1 (cheap, machine-attended):** cron/launchd on the Anki PC —
+  `git pull → sync-pending → AnkiConnect "sync" action` (AnkiWeb upload). Turns
+  "drains on next run" into "reaches the phone within minutes". Build when leaving
+  the Anki PC idle-but-on becomes routine.
+  **AnkiWeb etiquette:** all card pushes are local (AnkiConnect never touches
+  AnkiWeb); only the final `sync` call hits the server, and one sync sends all
+  pending changes (delta protocol) regardless of how many cards accumulated. So the
+  scheduler must guard, not batch: exit early when `git pull` brings nothing, and
+  call `sync` only when sync-pending actually pushed something. That caps AnkiWeb
+  hits at "number of real card sessions per day" — indistinguishable from manual
+  syncing. The bad pattern (and the ban stories) is content-free high-frequency
+  polling, which the guard rules out by construction.
+- **Step 2 (unattended, cloud):** GitHub Actions (push-trigger on `data/` + daily
+  cron): JSONL → auto-restore DB → second `anki_connector` backend that manipulates
+  the collection via the `anki` library → AnkiWeb pull, add pending notes/media,
+  AnkiWeb push → bot-commit the updated `data/` (note ids, synced flags) with
+  `[skip ci]`. Everything else (pending tracking, idempotent push, note-id capture)
+  is already built. Hard rules: **abort on any full-sync requirement** (never pick a
+  direction automatically — review history is at stake); AnkiWeb credentials live in
+  GitHub secrets; keep the frequency modest (client protocol, not a public API).
+- **Rejected: .apkg via releases/artifacts** — manual import per device, and it
+  conflicts with the note-id-tracked in-place-update model (backfill, leech rescue).
+
+---
+
 ## Pipeline Hardening Backlog (existing system, from the 2026-07-08 audit)
 
 Improvements to the pipeline as it stands — independent of the new skills above.
@@ -139,11 +172,19 @@ In priority order:
    `sync-updates` (changed DB rows → `updateNoteFields`) and orphan cleanup
    (`deleteNotes`). **Deliberately deferred until real usage actually produces the
    "I want to fix this card" moment** — building it speculatively is over-engineering
-   for a personal tool. Note: shares its `updateNoteFields` plumbing with leech rescue
-   and backfill-audio below; whichever lands first should shape the shared helper.
-2. **backfill-audio.** A TTS failure currently leaves the card permanently silent.
-   One subcommand: find DB rows with empty `audio_path`, synthesize, update the note's
-   `Audio` field via `anki_note_id`. Small and self-contained — good first pick.
+   for a personal tool. Note: backfill-audio (below) landed first and established the
+   `updateNoteFields` plumbing (`anki_connector.update_note_audio()`); this and leech
+   rescue should generalize that helper rather than grow parallel ones.
+   **Design constraint added 2026-07-10:** deletion must use tombstones (or edit the
+   JSONL alongside the DB) — the multi-machine reconcile deliberately resurrects bare
+   DB row deletions from the partitions, so "delete the row" alone no longer sticks.
+2. ~~**backfill-audio.**~~ **Done (2026-07-10)** — `pipeline.py backfill-audio` repairs
+   synced-but-silent notes: synthesizes, updates the note's `Audio` field via
+   `anki_note_id`, then records the file in the DB. Cards are skipped (not half-fixed)
+   while Anki is offline or without a recorded note id; pending cards are left to push
+   time, since TTS now happens at push (audio is made where it's pushed). From the same
+   session: online `run`s auto-drain the `synced_to_anki=0` backlog (`backlog_synced`),
+   and `ANKI_ENABLED=0` declares a generation-only machine.
 3. **doctor: skill-symlink check.** `.agents/skills/anki_card_generator` is gitignored
    and forgotten after every fresh clone (it happened on 2026-07-08). doctor should
    verify it and point at `./setup_symlinks.sh`.
