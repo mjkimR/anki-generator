@@ -166,6 +166,82 @@ def test_fresh_default_db_auto_restores_from_partitions(tmp_path, monkeypatch):
     assert result["exists"] is True
     assert result["count"] == 1
 
+def test_export_preserves_partition_cards_missing_from_db(tmp_path):
+    # The multi-machine trap: machine A pushed card A (in git's JSONL), machine B's DB
+    # predates the pull and only knows card B. B's export must UNION, never rewrite
+    # data/ down to its own stale state.
+    data_dir = tmp_path / "data"
+    src_db = str(tmp_path / "src.db")
+    insert_card_records([make_card("先方(せんぽう)", "先方の意向を確認する。")], db_path=src_db)
+    export_cards(data_dir=data_dir, db_path=src_db)
+
+    stale_db = str(tmp_path / "stale.db")
+    insert_card_records([make_card("妥協(だきょう)", "妥協を拒んだ。")], db_path=stale_db)
+    result = export_cards(data_dir=data_dir, db_path=stale_db)
+
+    assert result["total_cards"] == 2
+    lines = [json.loads(line) for f in sorted(data_dir.glob("cards-*.jsonl"))
+             for line in f.read_text(encoding="utf-8").splitlines()]
+    assert {c["root_id"] for c in lines} == {"先方(せんぽう)", "妥協(だきょう)"}
+    # And the stale DB itself caught up.
+    assert check_word("先方", db_path=stale_db)["exists"] is True
+
+def test_reconcile_merges_sync_state_monotonically(tmp_path):
+    data_dir = tmp_path / "data"
+    db = str(tmp_path / "test.db")
+    # Local rows: one freshly synced here, one still pending here.
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を拒んだ。", synced_to_anki=1, anki_note_id=111,
+                  back_tip="로컬에서 다듬은 팁"),
+        make_card("先方(せんぽう)", "先方の意向を確認する。"),
+    ], db_path=db)
+    # Partitions from the other machine: the first card stale (pre-sync), the second
+    # one pushed over there (synced, with a note id and audio).
+    partition = [
+        make_card("妥協(だきょう)", "妥協を拒んだ。", synced_to_anki=0, back_tip="구버전 팁",
+                  created_at="2026-07-01 00:00:00"),
+        make_card("先方(せんぽう)", "先方の意向を確認する。", synced_to_anki=1,
+                  anki_note_id=222, audio_path="tts_abc.mp3",
+                  created_at="2026-07-01 00:00:00"),
+    ]
+    data_dir.mkdir()
+    (data_dir / "cards-2026-07.jsonl").write_text(
+        "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in partition),
+        encoding="utf-8")
+
+    export_cards(data_dir=data_dir, db_path=db)
+
+    conn = get_connection(db)
+    rows = {r[0]: r for r in conn.execute(
+        "SELECT root_id, synced_to_anki, anki_note_id, audio_path, back_tip FROM cards")}
+    conn.close()
+    # A stale partition must not downgrade fresh local sync state — and content stays local.
+    assert rows["妥協(だきょう)"][1:] == (1, 111, "", "로컬에서 다듬은 팁")
+    # Sync state achieved on the other machine flows in: no re-push, note id usable here.
+    assert rows["先方(せんぽう)"][1:3] == (1, 222)
+    assert rows["先方(せんぽう)"][3] == "tts_abc.mp3"
+    assert fetch_pending(db_path=db) == []
+
+def test_get_connection_reconciles_when_partitions_change(tmp_path, monkeypatch):
+    # Not just fresh clones: a git pull that grows data/ must reach the existing DB on
+    # the next touch, or --check would keep reporting pulled words as new.
+    data_dir = tmp_path / "data"
+    src_db = str(tmp_path / "src.db")
+    insert_card_records([make_card("妥協(だきょう)", "妥協を拒んだ。")], db_path=src_db)
+    export_cards(data_dir=data_dir, db_path=src_db)
+
+    monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "default.db")
+    monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    assert check_word("妥協", db_path=None)["exists"] is True  # fresh default DB restored
+
+    # "git pull": another machine's card lands in the partition file.
+    extra = make_card("先方(せんぽう)", "先方の意向を確認する。",
+                      created_at="2026-07-01 00:00:00")
+    with open(data_dir / "cards-2026-07.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(extra, ensure_ascii=False) + "\n")
+
+    assert check_word("先方", db_path=None)["exists"] is True  # existing DB caught up
+
 def test_split_legacy_back():
     reading, meaning, tip = split_legacy_back(
         "決断を躊躇った(ためらった)。<br><br>[뜻] 결단을 망설였다.<br><br>[Tip] 뉘앙스 설명"
@@ -197,7 +273,10 @@ def test_export_partitions_by_month_and_is_deterministic(tmp_path):
 
     assert count_export_lines(data_dir=data_dir) == (2, 2)
 
-def test_export_removes_stale_partitions(tmp_path):
+def test_db_deletion_is_resurrected_by_export(tmp_path):
+    # Reconcile-first export means git is a safety net: dropping a DB row alone brings
+    # it back from the partitions. Real deletion must edit BOTH (the future delete-sync
+    # flow will own that — with tombstones; see the roadmap).
     db = str(tmp_path / "test.db")
     data_dir = tmp_path / "data"
     insert_card_records([
@@ -211,8 +290,22 @@ def test_export_removes_stale_partitions(tmp_path):
     conn.close()
 
     result = export_cards(data_dir=data_dir, db_path=db)
-    assert result["removed"] == ["cards-2026-06.jsonl"]
-    assert list(data_dir.glob("cards-*.jsonl")) == []
+    assert result["total_cards"] == 1  # resurrected, not erased from git
+    assert check_word("妥協", db_path=db)["exists"] is True
+
+def test_export_removes_partitions_with_no_cards(tmp_path):
+    # A partition that reconciles to nothing (empty/corrupt leftovers) is still cleaned up.
+    db = str(tmp_path / "test.db")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "cards-2026-05.jsonl").write_text("", encoding="utf-8")
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を拒んだ。", created_at="2026-06-15 10:00:00"),
+    ], db_path=db)
+
+    result = export_cards(data_dir=data_dir, db_path=db)
+    assert result["removed"] == ["cards-2026-05.jsonl"]
+    assert [f.name for f in sorted(data_dir.glob("cards-*.jsonl"))] == ["cards-2026-06.jsonl"]
 
 def test_import_roundtrip_preserves_everything(tmp_path):
     src_db = str(tmp_path / "src.db")

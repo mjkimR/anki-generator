@@ -69,6 +69,9 @@ def ensure_schema(conn):
     (b) a single combined 'back' column (mixed-language string).
     Idempotent — every connection goes through this."""
     cursor = conn.cursor()
+    # Small key/value side table: tracks the JSONL partitions fingerprint so the
+    # reconcile-on-change check in get_connection stays a per-file stat(), not a re-read.
+    cursor.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'")
     if not cursor.fetchone():
         cursor.execute(SCHEMA)
@@ -106,23 +109,40 @@ def ensure_schema(conn):
 
 def get_connection(db_path=None):
     target = Path(db_path) if db_path else DB_PATH
-    fresh = not target.exists()
     conn = sqlite3.connect(target)
     ensure_schema(conn)
-    # A missing default DB (fresh clone) is rebuilt from the git-tracked JSONL
-    # partitions on first touch — otherwise --check would silently report every known
-    # word as new and the agent would regenerate the whole collection as duplicates.
-    if fresh and db_path is None:
-        _restore_from_partitions(conn)
+    # The default DB reconciles from the git-tracked JSONL partitions whenever they
+    # changed since the last look: a fresh clone (missing DB), a git pull that brought
+    # cards from another machine, or hand-edited partitions. Without this, a DB that
+    # is merely *behind* the repo would report known words as new — and worse, the
+    # next export would rewrite data/ down to its own stale state. The fingerprint
+    # keeps the steady-state cost at one stat() per partition file.
+    if db_path is None:
+        fingerprint = _partitions_fingerprint(DATA_DIR)
+        if fingerprint != _get_meta(conn, "partitions_fingerprint"):
+            merged = _reconcile_cards(conn, _read_partition_cards(DATA_DIR))
+            _set_meta(conn, "partitions_fingerprint", fingerprint)
+            if merged:
+                print(f"[DB] Reconciled {merged} cards from {DATA_DIR}", file=sys.stderr)
     return conn
 
-def _restore_from_partitions(conn):
-    cards = _read_partition_cards(DATA_DIR)
-    if not cards:
-        return
-    inserted, _ = _insert_cards(conn, cards)
+def _partitions_fingerprint(data_dir):
+    """Cheap change signal for the data/ partitions (name + mtime + size). A git pull
+    or export rewrites files and changes it; an untouched data/ keeps it stable."""
+    files = sorted(Path(data_dir).glob("cards-*.jsonl"))
+    return json.dumps([[f.name, f.stat().st_mtime_ns, f.stat().st_size] for f in files])
+
+def _get_meta(conn, key):
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+def _set_meta(conn, key, value):
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?)"
+        " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
     conn.commit()
-    print(f"[DB] Fresh database — restored {inserted} cards from {DATA_DIR}", file=sys.stderr)
 
 def init_db(db_path=None):
     conn = get_connection(db_path)
@@ -208,6 +228,57 @@ def _insert_cards(conn, cards):
         inserted_count += 1
     return inserted_count, skipped
 
+# Reconcile merge (JSONL → DB) for multi-machine flows. Content fields stay local on
+# conflict — cards are create-only today, so a content difference means the local row is
+# the one mid-flight — while sync state merges monotonically: synced_to_anki only
+# ratchets up, anki_note_id and audio_path fill in when the local row lacks them. This
+# is what makes "push on machine A, pull on machine B" converge instead of machine B
+# re-pushing (duplicate) or a stale partition downgrading a freshly synced local row.
+_RECONCILE_SQL = f"""
+    INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
+    VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
+    ON CONFLICT(root_id, front) DO UPDATE SET
+        synced_to_anki = MAX(COALESCE(cards.synced_to_anki, 0),
+                             COALESCE(excluded.synced_to_anki, 0)),
+        anki_note_id = COALESCE(cards.anki_note_id, excluded.anki_note_id),
+        audio_path = CASE WHEN cards.audio_path IS NULL OR cards.audio_path = ''
+                          THEN excluded.audio_path ELSE cards.audio_path END
+"""
+
+def _reconcile_cards(conn, cards):
+    """Merges partition cards into the DB with _RECONCILE_SQL semantics. Returns the
+    number of rows processed. Malformed lines are skipped silently — surfacing them is
+    --import's job, not every connection's."""
+    cursor = conn.cursor()
+    merged = 0
+    for card in cards:
+        if any(not card.get(f) for f in REQUIRED_CARD_FIELDS):
+            continue
+        audio = card.get("audio_path") or ""
+        cursor.execute(
+            _RECONCILE_SQL,
+            (
+                card["root_id"],
+                card["front"],
+                card["back_reading"],
+                card.get("back_meaning", ""),
+                card.get("back_tip", ""),
+                card["target_word"],
+                card["pos"],
+                json.dumps(card.get("components", []), ensure_ascii=False),
+                json.dumps(card.get("collocations", []), ensure_ascii=False),
+                1 if card.get("is_hyogai") else 0,
+                json.dumps(card.get("tags", []), ensure_ascii=False),
+                Path(audio).name if audio else "",
+                card.get("anki_note_id"),
+                card.get("synced_to_anki", 0),
+                card.get("created_at"),
+            ),
+        )
+        merged += 1
+    conn.commit()
+    return merged
+
 def insert_card_records(cards, db_path=None):
     """Upserts a list of card dicts. Incomplete cards are skipped and reported."""
     conn = get_connection(db_path)
@@ -252,6 +323,20 @@ def mark_synced(root_id, front, note_id=None, db_path=None):
     conn.close()
     return updated
 
+def set_audio_path(root_id, front, audio_path, db_path=None):
+    """Records a card's audio file (stored as a bare name, resolved against media/ on
+    read — same rule as insert). Returns True if a row was updated."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE cards SET audio_path = ? WHERE root_id = ? AND front = ?",
+        (Path(audio_path).name if audio_path else "", root_id, front),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return updated
+
 def _row_to_card(row, columns):
     card = dict(zip(columns, row))
     for json_field in ("components", "collocations", "tags"):
@@ -279,18 +364,34 @@ def fetch_pending(db_path=None):
             card["audio_path"] = str(MEDIA_DIR / audio)
     return cards
 
+def fetch_missing_audio(db_path=None):
+    """Returns cards whose audio_path is empty — TTS failed (or the media files did not
+    travel with a restored DB). This is the backfill-audio recovery path's work list."""
+    conn = get_connection(db_path)
+    columns = list(CARD_COLUMNS)
+    rows = conn.execute(
+        f"SELECT {', '.join(columns)} FROM cards"
+        " WHERE audio_path IS NULL OR audio_path = '' ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return [_row_to_card(row, columns) for row in rows]
+
 def export_cards(data_dir=None, db_path=None):
     """Exports the whole DB to monthly-partitioned JSONL files (data/cards-YYYY-MM.jsonl,
     partitioned on created_at). One card per line, sorted by (root_id, front) with sorted
     JSON keys, so re-exports are byte-identical and git diffs stay minimal. Partition
-    files whose month no longer holds any cards are removed."""
+    files whose month no longer holds any cards are removed.
+
+    Exporting RECONCILES FROM the partitions first, so an export can only ever add to
+    what git already holds — a DB that is behind the repo (e.g. after a git pull from
+    another machine) can no longer rewrite the partitions down to its own stale state."""
     data_dir = Path(data_dir or DATA_DIR)
     conn = get_connection(db_path)
+    _reconcile_cards(conn, _read_partition_cards(data_dir))
     columns = list(CARD_COLUMNS) + ["created_at"]
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
     ).fetchall()
-    conn.close()
 
     partitions = {}
     for row in rows:
@@ -318,6 +419,11 @@ def export_cards(data_dir=None, db_path=None):
         if stale.name not in expected:
             stale.unlink()
             removed.append(stale.name)
+
+    # The export itself changed the partition files — record their new fingerprint so
+    # the next get_connection doesn't re-read what this DB just wrote.
+    _set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
+    conn.close()
 
     return {"success": True, "total_cards": len(rows), "written": written,
             "unchanged": unchanged, "removed": removed, "data_dir": str(data_dir)}
