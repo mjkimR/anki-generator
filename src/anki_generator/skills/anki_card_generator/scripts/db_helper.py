@@ -12,7 +12,8 @@ current_file = Path(__file__).resolve()
 src_dir = current_file.parents[4]  # Path to the src/ directory
 sys.path.append(str(src_dir))
 
-from anki_generator.config import DB_PATH, DATA_DIR, MEDIA_DIR  # noqa: E402
+from anki_generator.config import (DB_PATH, DATA_DIR, MEDIA_DIR, get_data_cards_dir,
+                                   get_data_known_words_dir, get_data_known_words_file)  # noqa: E402
 
 # Schema notes:
 # - root_id is deliberately NOT the primary key. Principle 1 (polysemy splitting) produces
@@ -52,7 +53,7 @@ REQUIRED_CARD_FIELDS = ("root_id", "front", "back_reading", "target_word", "pos"
 # known_words: snapshot registry of the legacy Anki decks (see docs/roadmap.md →
 # "Legacy Deck Migration"). One row per (kind, word, source_deck) — a word present in
 # two legacy decks keeps both rows; queries dedup by word. Only the stable fields are
-# mirrored to data/known_words.jsonl; ease/ivl/reps drift with every review, so they
+# mirrored to data/cards/known_words.jsonl; ease/ivl/reps drift with every review, so they
 # stay DB-local and Anki (via legacy_helper.py snapshot) remains their source of truth.
 KNOWN_SCHEMA = """
 CREATE TABLE IF NOT EXISTS known_words (
@@ -216,15 +217,15 @@ def get_connection(db_path=None):
 def _mirror_files(data_dir):
     """Every git-tracked JSONL file the DB mirrors: monthly card partitions plus the
     known-words registry."""
-    files = list(Path(data_dir).glob("cards-*.jsonl"))
-    known = Path(data_dir) / "known_words.jsonl"
+    files = list(get_data_cards_dir(data_dir).glob("cards-*.jsonl"))
+    known = get_data_known_words_file(data_dir)
     if known.exists():
         files.append(known)
     return sorted(files)
 
 def _partitions_fingerprint(data_dir):
-    """Cheap change signal for the data/ mirror files (name + mtime + size). A git pull
-    or export rewrites files and changes it; an untouched data/ keeps it stable."""
+    """Cheap change signal for the data/cards/ mirror files (name + mtime + size). A git pull
+    or export rewrites files and changes it; an untouched data/cards/ keeps it stable."""
     return json.dumps(
         [[f.name, f.stat().st_mtime_ns, f.stat().st_size] for f in _mirror_files(data_dir)]
     )
@@ -443,7 +444,7 @@ def _reconcile_known_words(conn, rows):
     return merged
 
 def _read_known_words(data_dir):
-    path = Path(data_dir) / "known_words.jsonl"
+    path = get_data_known_words_file(data_dir)
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
@@ -547,8 +548,8 @@ def fetch_missing_audio(db_path=None):
     return [_row_to_card(row, columns) for row in rows]
 
 def export_cards(data_dir=None, db_path=None):
-    """Exports the whole DB to monthly-partitioned JSONL files (data/cards-YYYY-MM.jsonl,
-    partitioned on created_at) plus the known-words mirror (data/known_words.jsonl,
+    """Exports the whole DB to monthly-partitioned JSONL files (data/cards/cards-YYYY-MM.jsonl,
+    partitioned on created_at) plus the known-words mirror (data/cards/known_words.jsonl,
     stable fields only). One row per line, deterministic ordering and sorted JSON keys,
     so re-exports are byte-identical and git diffs stay minimal. Partition files whose
     month no longer holds any cards are removed.
@@ -571,7 +572,10 @@ def export_cards(data_dir=None, db_path=None):
         month = (card.get("created_at") or "")[:7] or "unknown"
         partitions.setdefault(month, []).append(card)
 
-    data_dir.mkdir(parents=True, exist_ok=True)
+    cards_dir = get_data_cards_dir(data_dir)
+    known_words_dir = get_data_known_words_dir(data_dir)
+    cards_dir.mkdir(parents=True, exist_ok=True)
+    known_words_dir.mkdir(parents=True, exist_ok=True)
     written, unchanged, removed = [], [], []
     expected = set()
     for month, cards in sorted(partitions.items()):
@@ -580,14 +584,14 @@ def export_cards(data_dir=None, db_path=None):
         content = "".join(
             json.dumps(card, ensure_ascii=False, sort_keys=True) + "\n" for card in cards
         )
-        file_path = data_dir / file_name
+        file_path = cards_dir / file_name
         if file_path.exists() and file_path.read_text(encoding="utf-8") == content:
             unchanged.append(file_name)
             continue
         file_path.write_text(content, encoding="utf-8")
         written.append(file_name)
 
-    for stale in data_dir.glob("cards-*.jsonl"):
+    for stale in cards_dir.glob("cards-*.jsonl"):
         if stale.name not in expected:
             stale.unlink()
             removed.append(stale.name)
@@ -599,7 +603,7 @@ def export_cards(data_dir=None, db_path=None):
         f"SELECT {', '.join(KNOWN_MIRROR_COLUMNS)} FROM known_words"
         " ORDER BY kind, word, source_deck"
     ).fetchall()
-    known_path = data_dir / "known_words.jsonl"
+    known_path = get_data_known_words_file(data_dir)
     if known_rows:
         content = "".join(
             json.dumps(dict(zip(KNOWN_MIRROR_COLUMNS, row)), ensure_ascii=False,
@@ -626,7 +630,7 @@ def export_cards(data_dir=None, db_path=None):
 
 def _read_partition_cards(data_dir):
     cards = []
-    for file_path in sorted(Path(data_dir).glob("cards-*.jsonl")):
+    for file_path in sorted(get_data_cards_dir(data_dir).glob("cards-*.jsonl")):
         for line in file_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line:
@@ -636,11 +640,11 @@ def _read_partition_cards(data_dir):
 def import_cards_data(data_dir=None, db_path=None):
     """Rebuilds/merges the DB from the JSONL partitions. The upsert keyed on
     (root_id, front) makes this idempotent — safe to run on a fresh or existing DB."""
-    data_dir = Path(data_dir or DATA_DIR)
-    files = sorted(data_dir.glob("cards-*.jsonl"))
+    cards_dir = get_data_cards_dir(data_dir)
+    files = sorted(cards_dir.glob("cards-*.jsonl"))
     if not files:
         return {"success": True, "count": 0, "files": 0,
-                "message": f"No JSONL partitions found under {data_dir}"}
+                "message": f"No JSONL partitions found under {cards_dir}"}
 
     result = insert_card_records(_read_partition_cards(data_dir), db_path=db_path)
     result["files"] = len(files)
@@ -648,8 +652,7 @@ def import_cards_data(data_dir=None, db_path=None):
 
 def count_export_lines(data_dir=None):
     """Returns (partition_file_count, total_card_lines) of the JSONL export."""
-    data_dir = Path(data_dir or DATA_DIR)
-    files = sorted(data_dir.glob("cards-*.jsonl"))
+    files = sorted(get_data_cards_dir(data_dir).glob("cards-*.jsonl"))
     lines = 0
     for file_path in files:
         lines += sum(1 for line in file_path.read_text(encoding="utf-8").splitlines() if line.strip())
@@ -666,9 +669,9 @@ if __name__ == "__main__":
     parser.add_argument("--insert", type=str, help="Path to JSON file containing cards to insert")
     parser.add_argument("--pending", action="store_true", help="List cards not yet synced to Anki")
     parser.add_argument("--export", action="store_true",
-                        help="Export the DB to monthly JSONL partitions under data/")
+                        help="Export the DB to monthly JSONL partitions under data/cards/ and data/known_words/")
     parser.add_argument("--import", dest="import_data", action="store_true",
-                        help="Rebuild/merge the DB from the JSONL partitions under data/")
+                        help="Rebuild/merge the DB from the JSONL partitions under data/cards/")
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Override the JSONL data directory (default: <project>/data)")
 

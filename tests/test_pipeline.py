@@ -9,6 +9,7 @@ sys.path.append(str(src_dir))
 
 from anki_generator.skills.anki_card_generator.scripts import pipeline
 from anki_generator.skills.anki_card_generator.scripts import db_helper
+from anki_generator import config
 
 def make_japanese_card(**overrides):
     card = {
@@ -32,6 +33,7 @@ def write_file(tmp_path, cards, name="妥協.json"):
 def patch_backup(monkeypatch, tmp_path):
     """Points the auto-export at a temp dir so tests never touch the real data/."""
     monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     return tmp_path / "data"
 
 def patch_attempts(monkeypatch, tmp_path):
@@ -129,7 +131,7 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
 
     # The JSONL backup is refreshed automatically and reflects the synced card.
     assert len(result["backup"]["written"]) == 1
-    exported = json.loads(next(data_dir.glob("cards-*.jsonl")).read_text(encoding="utf-8"))
+    exported = json.loads(next((data_dir / "cards").glob("cards-*.jsonl")).read_text(encoding="utf-8"))
     assert exported["root_id"] == "妥協(だきょう)"
     assert exported["synced_to_anki"] == 1
 

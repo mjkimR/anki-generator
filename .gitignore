@@ -16,6 +16,7 @@ __pycache__/
 media/
 cards/
 temp_card.json
+data/
 
 # Local environment configs
 .env

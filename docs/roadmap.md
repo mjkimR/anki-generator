@@ -35,7 +35,7 @@ deterministic JSONL mirror under `data/` so git stays the backup layer, and a
 | `confused_with` | word actually used when `wrong-word` (feeds confusion capture) |
 | `created_at` | |
 
-Mirror: `data/attempts-YYYY-MM.jsonl` (monthly partitions, same determinism rules as
+Mirror: `data/cards/attempts-YYYY-MM.jsonl` (monthly partitions, same determinism rules as
 cards). Append-only data suits JSONL especially well — diffs are always pure additions.
 
 ### `confusions` — confusable word **groups**, not pairs
@@ -52,7 +52,7 @@ member groups, so the schema is group-based from the start:
 | `source` | `flag-harvest` / `conversation` / `output-practice` |
 | `created_at` | |
 
-Mirror: `data/confusions.jsonl`.
+Mirror: `data/cards/confusions.jsonl`.
 
 ---
 
@@ -219,7 +219,7 @@ discard review history to recreate content nobody struggles with.
 1. ~~**`known_words` registry**~~ **Done (2026-07-14)** — `legacy_helper.py snapshot`
    reads the legacy decks into the `known_words` table (kind `word`/`grammar`, per-source
    rows, never-studied cards excluded) and mirrors the **stable fields only** (identity,
-   status, lapses) to `data/known_words.jsonl`; fast-drifting stats (ease/ivl/reps) stay
+   status, lapses) to `data/known_words/known_words.jsonl`; fast-drifting stats (ease/ivl/reps) stay
    DB-local with Anki as their source of truth, so the JSONL rhythm is one big initial
    commit then small status diffs. The registry rides the standard reconcile-on-change
    (status ratchets to `retired`) and merge-then-mirror export; doctor gained the parity

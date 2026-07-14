@@ -1,6 +1,6 @@
 ---
 name: "anki_card_generator"
-description: "일본어 입력 문장이나 단어로부터 핵심 학습용 Anki 카드를 생성하고 검증, TTS 합성 및 Anki 앱과 로컬 DB로 동기화합니다."
+description: "Generates key study Anki cards from input Japanese sentences or words, validates them, synthesizes TTS, and syncs to the local database and Anki app."
 ---
 
 # Anki Card Generation Agent — Skill Guide

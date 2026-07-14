@@ -9,6 +9,7 @@ src_dir = test_file.parents[1] / "src"
 sys.path.append(str(src_dir))
 
 from anki_generator.skills.anki_card_generator.scripts import db_helper
+from anki_generator import config
 from anki_generator.skills.anki_card_generator.scripts.db_helper import (
     get_connection,
     insert_cards,
@@ -163,6 +164,7 @@ def test_fresh_default_db_auto_restores_from_partitions(tmp_path, monkeypatch):
 
     monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "default.db")
     monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
     result = check_word("妥協", db_path=None)  # db_path=None → default DB path
     assert result["exists"] is True
     assert result["count"] == 1
@@ -181,7 +183,7 @@ def test_export_preserves_partition_cards_missing_from_db(tmp_path):
     result = export_cards(data_dir=data_dir, db_path=stale_db)
 
     assert result["total_cards"] == 2
-    lines = [json.loads(line) for f in sorted(data_dir.glob("cards-*.jsonl"))
+    lines = [json.loads(line) for f in sorted((data_dir / "cards").glob("cards-*.jsonl"))
              for line in f.read_text(encoding="utf-8").splitlines()]
     assert {c["root_id"] for c in lines} == {"先方(せんぽう)", "妥協(だきょう)"}
     # And the stale DB itself caught up.
@@ -205,8 +207,8 @@ def test_reconcile_merges_sync_state_monotonically(tmp_path):
                   anki_note_id=222, audio_path="tts_abc.mp3",
                   created_at="2026-07-01 00:00:00"),
     ]
-    data_dir.mkdir()
-    (data_dir / "cards-2026-07.jsonl").write_text(
+    (data_dir / "cards").mkdir(parents=True, exist_ok=True)
+    (data_dir / "cards" / "cards-2026-07.jsonl").write_text(
         "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in partition),
         encoding="utf-8")
 
@@ -233,12 +235,13 @@ def test_get_connection_reconciles_when_partitions_change(tmp_path, monkeypatch)
 
     monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "default.db")
     monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
     assert check_word("妥協", db_path=None)["exists"] is True  # fresh default DB restored
 
     # "git pull": another machine's card lands in the partition file.
     extra = make_card("先方(せんぽう)", "先方の意向を確認する。",
                       created_at="2026-07-01 00:00:00")
-    with open(data_dir / "cards-2026-07.jsonl", "a", encoding="utf-8") as f:
+    with open(data_dir / "cards" / "cards-2026-07.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(extra, ensure_ascii=False) + "\n")
 
     assert check_word("先方", db_path=None)["exists"] is True  # existing DB caught up
@@ -268,7 +271,7 @@ def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
     result = export_cards(data_dir=data_dir, db_path=src)
     assert result["known_words"] == 2
     assert "known_words.jsonl" in result["written"]
-    mirror = (data_dir / "known_words.jsonl").read_text(encoding="utf-8")
+    mirror = (data_dir / "known_words" / "known_words.jsonl").read_text(encoding="utf-8")
     assert '"norm_key"' not in mirror  # derived, recomputable — never mirrored
 
     # Deterministic: re-export is byte-identical.
@@ -278,6 +281,7 @@ def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
     # A fresh machine (empty default DB) restores the registry on first access.
     monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "fresh.db")
     monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
     result = check_word("大筋", db_path=None)
     assert result["exists"] is False  # no AnkiGen card
     assert result["known_legacy"]["exists"] is True
@@ -293,7 +297,7 @@ def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
 def test_known_words_reconcile_ratchets_status_and_lapses(tmp_path):
     db = str(tmp_path / "test.db")
     data_dir = tmp_path / "data"
-    data_dir.mkdir()
+    (data_dir / "known_words").mkdir(parents=True, exist_ok=True)
     seed_known(db, [
         {"word": "A", "source_deck": "S", "status": "learned", "lapses": 2},
         {"word": "B", "source_deck": "S", "status": "retired", "lapses": 6},
@@ -305,7 +309,7 @@ def test_known_words_reconcile_ratchets_status_and_lapses(tmp_path):
         {"kind": "word", "word": "B", "source_deck": "S", "status": "learned", "lapses": 9},
         {"kind": "word", "word": "C", "source_deck": "S", "status": "learned", "lapses": 0},
     ]
-    (data_dir / "known_words.jsonl").write_text(
+    (data_dir / "known_words" / "known_words.jsonl").write_text(
         "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines),
         encoding="utf-8")
 
@@ -436,15 +440,15 @@ def test_export_removes_partitions_with_no_cards(tmp_path):
     # A partition that reconciles to nothing (empty/corrupt leftovers) is still cleaned up.
     db = str(tmp_path / "test.db")
     data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    (data_dir / "cards-2026-05.jsonl").write_text("", encoding="utf-8")
+    (data_dir / "cards").mkdir(parents=True, exist_ok=True)
+    (data_dir / "cards" / "cards-2026-05.jsonl").write_text("", encoding="utf-8")
     insert_card_records([
         make_card("妥協(だきょう)", "妥協を拒んだ。", created_at="2026-06-15 10:00:00"),
     ], db_path=db)
 
     result = export_cards(data_dir=data_dir, db_path=db)
     assert result["removed"] == ["cards-2026-05.jsonl"]
-    assert [f.name for f in sorted(data_dir.glob("cards-*.jsonl"))] == ["cards-2026-06.jsonl"]
+    assert [f.name for f in sorted((data_dir / "cards").glob("cards-*.jsonl"))] == ["cards-2026-06.jsonl"]
 
 def test_import_roundtrip_preserves_everything(tmp_path):
     src_db = str(tmp_path / "src.db")

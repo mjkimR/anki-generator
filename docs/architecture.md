@@ -20,7 +20,7 @@ graph TD
     Connector -->|AnkiConnect API| Anki[Anki Desktop App]
     Pipeline -->|mark synced=1| DB
     Pipeline -->|archive| Done["cards/done/"]
-    Pipeline -->|refresh JSONL backup| Data["data/cards-YYYY-MM.jsonl"]
+    Pipeline -->|refresh JSONL backup| Data["data/cards/cards-YYYY-MM.jsonl"]
 ```
 
 The agent's role is deliberately reduced to **content generation**: it writes the working file
@@ -51,10 +51,10 @@ Centralizes application settings, loading environment variables from `.env` with
 ### 2. Database Helper (`db_helper.py`)
 Interacts with the local SQLite database (`anki_generator.db`) which serves as the "Source of Truth" for generated card histories:
 - **Schema**: keyed on `UNIQUE(root_id, front)` — not `root_id` alone — so polysemous words can own one card per sense without clobbering each other. Re-inserting the same sense upserts in place, keeping the row id and (unless the card carries an explicit timestamp) its original `created_at`, so cards never drift between monthly backup partitions. The card back is stored structurally (`back_reading` JA / `back_meaning` KO / `back_tip` KO); the combined Anki string is composed only at push time. `audio_path` holds a **bare file name** (resolved against `media/` on read) so the DB and its JSONL export survive repo moves; `anki_note_id` records the Anki note created at push time, keeping later note updates/deletes possible.
-- **Auto-init/migration/reconcile**: every connection ensures the schema exists and transparently migrates both legacy layouts (`root_id PRIMARY KEY`, combined `back` column — split best-effort on `[뜻]`/`[Tip]` markers). The default DB **reconciles from the `data/` JSONL partitions whenever they changed** (tracked by a name/mtime/size fingerprint in a `meta` table, so the steady-state cost is one `stat()` per file): a fresh clone rebuilds the DB, and a `git pull` that brought cards from another machine reaches the existing DB on its next touch — `--check` never reports pulled words as new. The reconcile merge keeps content fields local and merges **sync state monotonically** (`synced_to_anki` only ratchets up, `anki_note_id`/`audio_path` fill in when missing locally), so a stale partition can't downgrade a freshly synced row and a card pushed on another machine is never re-pushed here.
-- **JSONL backup**: `export_cards()` **reconciles from the partitions first, then mirrors** the whole DB to `data/cards-YYYY-MM.jsonl` (partitioned on `created_at`, deterministic ordering → minimal git diffs) — an export can only ever add to what git holds, never rewrite it down to a stale DB's state. `import_cards_data()` is the full restore (JSONL wins). The pipeline refreshes the export after every persisting run. Consequence: dropping a DB row alone gets resurrected from git — real deletion is the future delete-sync flow's job (tombstones).
+- **Auto-init/migration/reconcile**: every connection ensures the schema exists and transparently migrates both legacy layouts (`root_id PRIMARY KEY`, combined `back` column — split best-effort on `[뜻]`/`[Tip]` markers). The default DB **reconciles from the `data/cards/` JSONL partitions whenever they changed** (tracked by a name/mtime/size fingerprint in a `meta` table, so the steady-state cost is one `stat()` per file): a fresh clone rebuilds the DB, and a `git pull` that brought cards from another machine reaches the existing DB on its next touch — `--check` never reports pulled words as new. The reconcile merge keeps content fields local and merges **sync state monotonically** (`synced_to_anki` only ratchets up, `anki_note_id`/`audio_path` fill in when missing locally), so a stale partition can't downgrade a freshly synced row and a card pushed on another machine is never re-pushed here.
+- **JSONL backup**: `export_cards()` **reconciles from the partitions first, then mirrors** the whole DB to `data/cards/cards-YYYY-MM.jsonl` (partitioned on `created_at`, deterministic ordering → minimal git diffs) — an export can only ever add to what git holds, never rewrite it down to a stale DB's state. `import_cards_data()` is the full restore (JSONL wins). The pipeline refreshes the export after every persisting run. Consequence: dropping a DB row alone gets resurrected from git — real deletion is the future delete-sync flow's job (tombstones).
 - **Sync tracking**: `mark_synced(root_id, front, note_id)` and `fetch_pending()` back the pipeline's DB-first ordering and the `sync-pending` recovery path.
-- **Known-words registry** (`known_words` table): the legacy-deck snapshot written by `legacy_helper.py` (see below), keyed on `(kind, word, source_deck)`. Only the stable fields (identity, status, lapses) are mirrored to `data/known_words.jsonl` — fast-drifting review stats (ease/ivl/reps) stay DB-local, with Anki as their source of truth — so the mirror's git rhythm is one big initial commit, then small status diffs. The registry rides the same reconcile-on-change (status ratchets to `retired`, lapses ratchet up) and merge-then-mirror export as cards, so it travels to generation-only machines via git. Each row also carries a derived `norm_key` (root_id-shaped matching key — see §6) that is never mirrored: the code (`normalize_known_word`), not any stored copy, is its source of truth — it is recomputed on reconcile, backfilled for NULL rows on every connection, and fully rebuilt once when the normalizer's rules version (`_NORM_VERSION`) changes.
+- **Known-words registry** (`known_words` table): the legacy-deck snapshot written by `legacy_helper.py` (see below), keyed on `(kind, word, source_deck)`. Only the stable fields (identity, status, lapses) are mirrored to `data/known_words/known_words.jsonl` — fast-drifting review stats (ease/ivl/reps) stay DB-local, with Anki as their source of truth — so the mirror's git rhythm is one big initial commit, then small status diffs. The registry rides the same reconcile-on-change (status ratchets to `retired`, lapses ratchet up) and merge-then-mirror export as cards, so it travels to generation-only machines via git. Each row also carries a derived `norm_key` (root_id-shaped matching key — see §6) that is never mirrored: the code (`normalize_known_word`), not any stored copy, is its source of truth — it is recomputed on reconcile, backfilled for NULL rows on every connection, and fully rebuilt once when the normalizer's rules version (`_NORM_VERSION`) changes.
 - CLI: `--init`, `--check <word>` (exact + kanji-part prefix lookup reporting **all** sense matches, plus a `known_legacy` block when the word already lives in the legacy decks), `--insert <path>` (incomplete cards skipped and reported), `--pending` (list unsynced cards), `--export` / `--import` (JSONL backup in both directions).
 
 ### 3. Validator (`validator.py`)
@@ -184,21 +184,21 @@ note in place.
 ## Multiple Machines
 
 Cards — and the known-words registry, which rides the same rails — travel between
-machines through **git** (the `data/` mirrors) and through **AnkiWeb** (the Anki
+machines through **git** (the `data/cards/` mirrors) and through **AnkiWeb** (the Anki
 collection); the SQLite DB and `media/` stay local. Four mechanisms make that safe:
 
 1. **Reconcile-on-change** — after a `git pull`, the next DB touch merges the
    partitions in (see `db_helper` above). Machine B immediately knows machine A's
    words, `--check` stays accurate, and the monotonic sync-state merge means a card
    pushed on A is never re-pushed on B.
-2. **Merge-then-mirror export** — an export can only add to `data/`, so a stale DB can
+2. **Merge-then-mirror export** — an export can only add to `data/cards/`, so a stale DB can
    never rewrite git history away.
 3. **Audio is made where it's pushed** — generation never synthesizes; the pushing
    machine runs TTS just before each note lands (the deterministic voice+text cache
    key makes re-runs free). A generation-only machine therefore produces no mp3s at
    all — nothing local is lost when cards travel. If synthesis fails at push time, the
    card pushes silent with `audio_path` left empty, so `backfill-audio` still finds it.
-4. **Union merge for partitions** — `.gitattributes` sets `data/*.jsonl merge=union`:
+4. **Union merge for partitions** — `.gitattributes` sets `data/cards/*.jsonl` and `data/known_words/*.jsonl` to `merge=union`:
    both machines appending cards to the same monthly file no longer conflicts; the
    next run reconciles + re-exports a clean deterministic file.
 

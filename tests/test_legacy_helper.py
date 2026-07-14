@@ -8,6 +8,7 @@ src_dir = test_file.parents[1] / "src"
 sys.path.append(str(src_dir))
 
 from anki_generator.skills.anki_card_generator.scripts import db_helper, legacy_helper
+from anki_generator import config
 from anki_generator.skills.anki_card_generator.scripts.db_helper import (
     get_connection,
     insert_card_records,
@@ -77,6 +78,7 @@ SPEC_G = {"query": 'deck:"G"', "label": "G문법", "kind": "grammar",
 def patch_fake_anki(monkeypatch, tmp_path):
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_invoke)
     monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
 
 def test_snapshot_builds_registry(tmp_path, monkeypatch):
     patch_fake_anki(monkeypatch, tmp_path)
@@ -110,7 +112,7 @@ def test_snapshot_builds_registry(tmp_path, monkeypatch):
 
     # The stable fields were mirrored (and only them — norm_key is derived,
     # ease is DB-local).
-    mirror = (tmp_path / "data" / "known_words.jsonl").read_text(encoding="utf-8")
+    mirror = (tmp_path / "data" / "known_words" / "known_words.jsonl").read_text(encoding="utf-8")
     assert len(mirror.splitlines()) == 2
     assert '"ease"' not in mirror
     assert '"norm_key"' not in mirror
@@ -210,6 +212,7 @@ def seed_sources(db, specs):
 def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     seed_sources(db, [{"query": 'deck:"V"', "label": "V어휘", "kind": "word",
                        "word_fields": ["단어", "Expression"]}])
     seed_known(db, [
@@ -277,7 +280,7 @@ def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     assert statuses["促す/JLPT N1"] == "learned"  # unsynced card doesn't retire yet
 
     # The status change reached the git mirror.
-    mirror = (tmp_path / "data" / "known_words.jsonl").read_text(encoding="utf-8")
+    mirror = (tmp_path / "data" / "known_words" / "known_words.jsonl").read_text(encoding="utf-8")
     assert sum(1 for line in mirror.splitlines() if '"retired"' in line) == 3
 
     # The judgment call ("same word") closes the needs_review entry.
@@ -394,6 +397,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
         raise AssertionError(f"unexpected action {action}")
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_invoke)
     monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
 
     db = str(tmp_path / "test.db")
     spec = {"query": 'deck:"Custom::N0" note:"MyModel"', "label": "N0", "kind": "word",
@@ -419,6 +423,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
 def test_retire_promoted_searches_stored_custom_sources(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     seed_known(db, [{"word": "跨る", "source_deck": "N0", "lapses": 5}])
     insert_card_records([
         {"root_id": "跨る(またがる)", "front": "馬に跨った。", "back_reading": "r",

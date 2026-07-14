@@ -16,22 +16,22 @@ It takes Japanese words, inflections, or sentences, extracts high-value targets,
 ## Project Structure
 
 - `src/`: Main source files, scripts, and agent skill configurations.
-- `data/`: Git-tracked JSONL mirrors of the DB — card history (monthly partitions, one
-  card per line) and the known-words registry snapshot of the legacy decks.
+- `data/cards/` & `data/known_words/`: Git-tracked JSONL mirrors of the DB — card history (monthly partitions)
+  and the known-words registry snapshot of the legacy decks.
 - `docs/`: Design architecture, schema validation rules, and the skill/system roadmap.
 - `tests/`: Automated unit tests for card verification.
 
 ## Data & Backup
 
 The gitignored SQLite DB (`anki_generator.db`) is the source of truth. Every pipeline run
-refreshes a git-friendly mirror of it under `data/` — deterministic, monthly-partitioned
+refreshes a git-friendly mirror of it under `data/cards/` — deterministic, monthly-partitioned
 JSONL whose diffs stay minimal. Commit those files to keep your card history in git.
 
 - **Restore/merge is automatic**: a fresh clone rebuilds `anki_generator.db` from
-  `data/`, and after a `git pull` the next DB access merges in cards pulled from
+  `data/cards/`, and after a `git pull` the next DB access merges in cards pulled from
   another machine (manual equivalent: `db_helper.py --import`).
 - **Multiple machines work**: cards travel via git, the Anki collection via AnkiWeb;
-  exports only ever add to `data/`, and audio is synthesized at push time by whichever
+  exports only ever add to `data/cards/`, and audio is synthesized at push time by whichever
   machine pushes. A machine without Anki sets `ANKI_ENABLED=0` in its `.env`
   (generation-only mode: commit `data/` and you're done). One rule: on a new Anki
   machine, sync Anki once before the first push. See `docs/architecture.md` →
@@ -41,7 +41,7 @@ JSONL whose diffs stay minimal. Commit those files to keep your card history in 
   `pipeline.py backfill-audio` repairs cards whose TTS failed). See
   `docs/architecture.md` → *Offline Behavior*.
 - **Known-words registry**: `legacy_helper.py snapshot` mirrors the legacy Anki decks
-  into `data/known_words.jsonl` so `--check` also answers "already known from the old
+  into `data/known_words/known_words.jsonl` so `--check` also answers "already known from the old
   decks", and `legacy_helper.py weak-queue` ranks which legacy words deserve a
   regenerated card (the shrink-first migration — see `docs/roadmap.md`).
 - `pipeline.py doctor` verifies the DB and the JSONL mirror stay in sync and tells you
@@ -67,7 +67,7 @@ JSONL whose diffs stay minimal. Commit those files to keep your card history in 
    chmod +x setup_symlinks.sh
    ./setup_symlinks.sh
    ```
-4. Initialize the SQLite database (on a clone that already has `data/` partitions this
+4. Initialize the SQLite database (on a clone that already has `data/cards/` partitions this
    automatically restores every card):
    ```bash
    uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --init

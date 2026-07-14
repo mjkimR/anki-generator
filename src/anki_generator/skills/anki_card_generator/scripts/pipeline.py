@@ -292,7 +292,7 @@ def cmd_run(file_path, deck_name, db_path=None):
     if not anki_online:
         result["anki_error"] = anki_error
         if not ANKI_ENABLED:
-            result["message"] = ("Cards are persisted to the DB and mirrored to data/ — "
+            result["message"] = ("Cards are persisted to the DB and mirrored under data/ — "
                                  "this machine is generation-only (ANKI_ENABLED=0). "
                                  "Committing data/ is all that's needed here; an "
                                  "Anki-equipped machine will sync (and synthesize audio) "

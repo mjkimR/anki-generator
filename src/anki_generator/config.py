@@ -33,6 +33,21 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 # Not mkdir'd at import time — created on demand by db_helper.export_cards().
 DATA_DIR = PROJECT_ROOT / "data"
 
+# Subdirectories inside the DATA_DIR (Centralized path management)
+DATA_CARDS_SUBDIR = "cards"
+DATA_KNOWN_WORDS_SUBDIR = "known_words"
+DATA_ATTEMPTS_SUBDIR = "attempts"
+DATA_CONFUSIONS_SUBDIR = "confusions"
+
+def get_data_cards_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_CARDS_SUBDIR
+
+def get_data_known_words_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_KNOWN_WORDS_SUBDIR
+
+def get_data_known_words_file(data_dir=None) -> Path:
+    return get_data_known_words_dir(data_dir) / "known_words.jsonl"
+
 # Card working files: one JSON per target word under pending/, archived to done/
 # after the pipeline persists them (the DB is the source of truth from then on).
 CARDS_PENDING_DIR = PROJECT_ROOT / "cards" / "pending"
