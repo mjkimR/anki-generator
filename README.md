@@ -16,7 +16,8 @@ It takes Japanese words, inflections, or sentences, extracts high-value targets,
 ## Project Structure
 
 - `src/`: Main source files, scripts, and agent skill configurations.
-- `data/`: Git-tracked JSONL backup of the card DB (monthly partitions, one card per line).
+- `data/`: Git-tracked JSONL mirrors of the DB — card history (monthly partitions, one
+  card per line) and the known-words registry snapshot of the legacy decks.
 - `docs/`: Design architecture, schema validation rules, and the skill/system roadmap.
 - `tests/`: Automated unit tests for card verification.
 
@@ -39,6 +40,10 @@ JSONL whose diffs stay minimal. Commit those files to keep your card history in 
   with Anki open pushes them automatically (`pipeline.py sync-pending` drains manually;
   `pipeline.py backfill-audio` repairs cards whose TTS failed). See
   `docs/architecture.md` → *Offline Behavior*.
+- **Known-words registry**: `legacy_helper.py snapshot` mirrors the legacy Anki decks
+  into `data/known_words.jsonl` so `--check` also answers "already known from the old
+  decks", and `legacy_helper.py weak-queue` ranks which legacy words deserve a
+  regenerated card (the shrink-first migration — see `docs/roadmap.md`).
 - `pipeline.py doctor` verifies the DB and the JSONL mirror stay in sync and tells you
   whether `--export` or `--import` is the right direction to fix a drift.
 

@@ -30,14 +30,20 @@ or a full sentence, generate cards and drive the pipeline to completion.
 1. If the user gave a sentence, use your own knowledge to extract the high-value advanced
    vocabulary (N2~N1 or business words/idioms) worth studying, and build a target-word list
    (e.g. `奔走する`, `妥協`).
-2. For each extracted target, check whether it is already registered (`--check` is the one
-   helper command you call directly — everything else goes through the driver):
+2. For each extracted target, check whether it is already registered (`--check` is the only
+   helper you call directly during card generation — everything else goes through the
+   driver; legacy-deck work has its own commands, see `legacy_migration.md`):
    * `uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --check "<word>"`
 3. If the response reports `exists: true`, inspect `count` and `matches` (a polysemous word may
    already own several sense cards):
    * Ask the user whether to add a new card for a different sense, or skip this word.
      A new sense card with the same `root_id` is fine — the DB keys on `(root_id, front)`.
    * If `exists: false`, proceed.
+4. The response also carries `known_legacy` — whether the word already lives in the user's
+   legacy Anki decks (with source deck and lapse count). It is informational, not a veto:
+   still make the card when the user asked for it, but mention the prior knowledge (e.g.
+   "레거시 N1 덱에서 학습한 단어예요, lapses 5") — high lapses actually make the word a
+   *better* candidate for a fresh example-based card.
 
 ### [Step 2] Japanese-Only Generation (Pass A — monolingual)
 Produce the **Japanese half** of the card and **nothing Korean at all**, following the
@@ -107,6 +113,13 @@ Report the final summary to the user: cards created, sense splits, sync status, 
   `uv run python .../scripts/pipeline.py backfill-audio`
 * Clean up orphaned audio files (occasionally, or when the user asks):
   `uv run python .../scripts/pipeline.py gc-media`
+
+### Legacy decks (승격 / 마이그레이션) — read the playbook first
+When the user wants anything involving the **legacy decks** — promoting weak words
+(승격), registering/absorbing another deck into the known-words registry, or
+compressing duplicate notes — read **`legacy_migration.md`** (next to this file) and
+follow it. Do not improvise the flow from memory: the playbook carries the exact
+commands, the deck-registration conversation, and the dry-run-before-apply safety rules.
 
 ---
 
