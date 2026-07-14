@@ -9,8 +9,21 @@ sys.path.append(str(src_dir))
 from anki_generator.skills.anki_card_generator.scripts.tts_helper import (
     clean_html,
     default_output_path,
+    reading_to_kana,
     synthesize,
 )
+
+def test_reading_to_kana_speaks_the_validated_reading():
+    # The engine must not guess readings or boundaries: 傷はじきに was misread as
+    # きず・はじき・に when fed raw kanji. The kana-ized reading is unambiguous and
+    # keeps the half-width spaces as segmentation hints.
+    assert (reading_to_kana("今[いま]は 辛[つら]くても、 傷[きず]は じきに 癒[い]えるものだ。")
+            == "いまは つらくても、 きずは じきに いえるものだ。")
+
+def test_reading_to_kana_keeps_okurigana_and_plain_text():
+    assert reading_to_kana("心[こころ]を 込[こ]めて もてなした。") == "こころを こめて もてなした。"
+    assert reading_to_kana("じきに治るよ。") == "じきに治るよ。"  # no brackets → untouched
+    assert reading_to_kana("") == ""
 
 def test_clean_html_strips_span_markup():
     text = "資金繰りの<span style='color:blue'><b>圧迫</b></span>で難航した。"

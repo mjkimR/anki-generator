@@ -21,6 +21,16 @@ sys.path.append(str(src_dir))
 
 from anki_generator.config import MEDIA_DIR, TTS_DEFAULT_VOICE  # noqa: E402
 
+def reading_to_kana(back_reading):
+    """Turns the validated bracket-furigana sentence into the exact text TTS should
+    speak: each annotated word (傷[きず]) collapses to its reading (きず), okurigana
+    and everything else stay put, and the half-width spaces survive as segmentation
+    hints. This removes the whole misreading class — the engine no longer guesses
+    kanji readings or word boundaries (傷はじきに → きずは じきに, not きず・はじき・に);
+    the validator already guarantees every kanji run carries a bracket, so the output
+    is kana-only."""
+    return re.sub(r'[^\s\[\]]+\[([^\]]+)\]', r'\1', back_reading or "").strip()
+
 def clean_html(raw_html):
     """Strips card markup to prevent TTS mispronunciations: <br> becomes a space (not
     deleted outright, which would fuse adjacent words), remaining tags are removed,
