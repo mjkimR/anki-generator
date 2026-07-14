@@ -4,6 +4,7 @@ import sys
 import sqlite3
 import json
 import argparse
+import unicodedata
 from pathlib import Path
 
 # Automatically add the src/ directory to the system path
@@ -48,6 +49,88 @@ CARD_COLUMNS = ("root_id", "front", "back_reading", "back_meaning", "back_tip",
 
 REQUIRED_CARD_FIELDS = ("root_id", "front", "back_reading", "target_word", "pos")
 
+# known_words: snapshot registry of the legacy Anki decks (see docs/roadmap.md →
+# "Legacy Deck Migration"). One row per (kind, word, source_deck) — a word present in
+# two legacy decks keeps both rows; queries dedup by word. Only the stable fields are
+# mirrored to data/known_words.jsonl; ease/ivl/reps drift with every review, so they
+# stay DB-local and Anki (via legacy_helper.py snapshot) remains their source of truth.
+KNOWN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS known_words (
+    kind TEXT NOT NULL,            -- 'word' | 'grammar'
+    word TEXT NOT NULL,            -- the expression itself for kind='grammar'
+    reading TEXT,
+    meaning TEXT,
+    source_deck TEXT NOT NULL,     -- short source label, e.g. 'JLPT N1'
+    status TEXT NOT NULL DEFAULT 'learned',  -- 'learned' | 'retired'
+    lapses INTEGER DEFAULT 0,
+    ease REAL,                     -- DB-local (not mirrored)
+    ivl INTEGER,                   -- DB-local (not mirrored)
+    reps INTEGER,                  -- DB-local (not mirrored)
+    anki_note_id INTEGER,          -- NULL for grammar rows (they span many notes)
+    norm_key TEXT,                 -- derived root_id-shaped key (not mirrored, recomputable)
+    updated_at TIMESTAMP,
+    PRIMARY KEY (kind, word, source_deck)
+);
+"""
+
+KNOWN_MIRROR_COLUMNS = ("kind", "word", "reading", "meaning", "source_deck",
+                        "status", "lapses")
+
+_KANJI_RE = re.compile(r"[一-鿿]")
+_FURIGANA_RE = re.compile(r"[^\s\[\]]+\[([^\]]+)\]")   # 開[あ]く → あく
+_VARIANT_SPLIT_RE = re.compile(r"[、，,／/・]")          # 混む・込む / しんと、しいんと
+_PAREN_NOTE_RE = re.compile(r"\([^)]*\)")               # すてき(な) → すてき
+
+def _norm_variant(text, collapse_furigana=False):
+    text = unicodedata.normalize("NFKC", text or "").replace("〜", "~")
+    text = _VARIANT_SPLIT_RE.split(text)[0]
+    if collapse_furigana:
+        text = _FURIGANA_RE.sub(r"\1", text)
+    text = _PAREN_NOTE_RE.sub("", text)
+    return re.sub(r"\s+", "", text)
+
+def normalize_known_word(word, reading=None):
+    """Derives the root_id-shaped matching key for a legacy headword: 咎める + とがめる
+    → 咎める(とがめる); a kana-only headword stays bare (とがめる). Deterministic format
+    cleanup only — NFKC + wave-dash unification, first variant of multi-expression
+    fields, annotation parens stripped, bracket-furigana readings collapsed to kana.
+    What it deliberately does NOT do: resolve a kana headword to a kanji form (that
+    needs meaning-level judgment — the agent's job, not this function's). The raw
+    `word` column stays untouched: retiring searches Anki by the original field value."""
+    base = _norm_variant(word)
+    kana = _norm_variant(reading, collapse_furigana=True)
+    if base and kana and kana != base and _KANJI_RE.search(base):
+        return f"{base}({kana})"
+    return base
+
+# Bump when normalize_known_word's rules change: stored norm_keys are a cache of
+# that function, and the version mismatch triggers a one-time full rebuild.
+_NORM_VERSION = "1"
+
+def _ensure_norm_keys(conn):
+    """Additive migration + backfill for known_words.norm_key. norm_key is derived
+    data — the code (normalize_known_word), not any stored copy, is its source of
+    truth, which is also why the JSONL mirror never carries it. Every connection
+    fills NULL rows (pre-migration, raw-inserted, or mirror-imported ones), and a
+    normalizer version bump rebuilds every row once."""
+    cursor = conn.cursor()
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(known_words)")}
+    if "norm_key" not in columns:
+        cursor.execute("ALTER TABLE known_words ADD COLUMN norm_key TEXT")
+    rules_changed = _get_meta(conn, "norm_version") != _NORM_VERSION
+    where = "" if rules_changed else " WHERE norm_key IS NULL"
+    stale = cursor.execute(
+        f"SELECT kind, word, source_deck, reading FROM known_words{where}").fetchall()
+    for kind, word, source_deck, reading in stale:
+        cursor.execute(
+            "UPDATE known_words SET norm_key = ?"
+            " WHERE kind = ? AND word = ? AND source_deck = ?",
+            (normalize_known_word(word, reading), kind, word, source_deck))
+    if rules_changed:
+        _set_meta(conn, "norm_version", _NORM_VERSION)
+    elif stale:
+        conn.commit()
+
 def split_legacy_back(back):
     """Best-effort split of the legacy combined back string
     ('reading<br><br>[뜻] ...<br><br>[Tip] ...') into (reading, meaning, tip)."""
@@ -72,6 +155,8 @@ def ensure_schema(conn):
     # Small key/value side table: tracks the JSONL partitions fingerprint so the
     # reconcile-on-change check in get_connection stays a per-file stat(), not a re-read.
     cursor.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    cursor.execute(KNOWN_SCHEMA)
+    _ensure_norm_keys(conn)
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'")
     if not cursor.fetchone():
         cursor.execute(SCHEMA)
@@ -121,16 +206,28 @@ def get_connection(db_path=None):
         fingerprint = _partitions_fingerprint(DATA_DIR)
         if fingerprint != _get_meta(conn, "partitions_fingerprint"):
             merged = _reconcile_cards(conn, _read_partition_cards(DATA_DIR))
+            merged_known = _reconcile_known_words(conn, _read_known_words(DATA_DIR))
             _set_meta(conn, "partitions_fingerprint", fingerprint)
-            if merged:
-                print(f"[DB] Reconciled {merged} cards from {DATA_DIR}", file=sys.stderr)
+            if merged or merged_known:
+                print(f"[DB] Reconciled {merged} cards + {merged_known} known words"
+                      f" from {DATA_DIR}", file=sys.stderr)
     return conn
 
+def _mirror_files(data_dir):
+    """Every git-tracked JSONL file the DB mirrors: monthly card partitions plus the
+    known-words registry."""
+    files = list(Path(data_dir).glob("cards-*.jsonl"))
+    known = Path(data_dir) / "known_words.jsonl"
+    if known.exists():
+        files.append(known)
+    return sorted(files)
+
 def _partitions_fingerprint(data_dir):
-    """Cheap change signal for the data/ partitions (name + mtime + size). A git pull
+    """Cheap change signal for the data/ mirror files (name + mtime + size). A git pull
     or export rewrites files and changes it; an untouched data/ keeps it stable."""
-    files = sorted(Path(data_dir).glob("cards-*.jsonl"))
-    return json.dumps([[f.name, f.stat().st_mtime_ns, f.stat().st_size] for f in files])
+    return json.dumps(
+        [[f.name, f.stat().st_mtime_ns, f.stat().st_size] for f in _mirror_files(data_dir)]
+    )
 
 def _get_meta(conn, key):
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -167,6 +264,23 @@ def check_word(word, db_path=None):
         (word, f"{escaped}(%"),
     )
     rows = cursor.fetchall()
+
+    # Legacy-deck knowledge, matched on both the raw word and the normalized key.
+    # A root_id-shaped query ('咎める(とがめる)') also reaches kana-only registry rows
+    # via its reading part; a bare kanji query cannot (no reading to bridge with) —
+    # retire-promoted's reading tier catches those after the card is pushed.
+    m = re.match(r"^([^(]+)\(([^)]+)\)$", word.strip())
+    base, reading = m.groups() if m else (word.split("(")[0].strip(), None)
+    keys = {word, base, normalize_known_word(base, reading)}
+    if reading:
+        keys.add(reading)
+    placeholders = ", ".join("?" for _ in keys)
+    known_rows = cursor.execute(
+        f"SELECT kind, word, source_deck, status, lapses FROM known_words"
+        f" WHERE word IN ({placeholders}) OR norm_key IN ({placeholders})"
+        f" ORDER BY kind, source_deck",
+        sorted(keys) * 2,
+    ).fetchall()
     conn.close()
 
     return {
@@ -176,6 +290,14 @@ def check_word(word, db_path=None):
             {"root_id": r[0], "front": r[1], "back_reading": r[2], "back_meaning": r[3]}
             for r in rows
         ],
+        "known_legacy": {
+            "exists": bool(known_rows),
+            "matches": [
+                {"kind": r[0], "word": r[1], "source_deck": r[2], "status": r[3],
+                 "lapses": r[4]}
+                for r in known_rows
+            ],
+        },
     }
 
 # Upsert on (root_id, front): same sense updates in place (keeping the row id and its
@@ -279,6 +401,54 @@ def _reconcile_cards(conn, cards):
     conn.commit()
     return merged
 
+# Reconcile merge (JSONL → DB) for known_words. Same multi-machine philosophy as cards:
+# status only ratchets forward (once a word is retired anywhere, it stays retired) and
+# lapses only ratchet up; identity fields fill in when locally empty. The DB-local stat
+# columns (ease/ivl/reps) are not in the mirror, so they are never touched here.
+_RECONCILE_KNOWN_SQL = f"""
+    INSERT INTO known_words ({', '.join(KNOWN_MIRROR_COLUMNS)}, norm_key)
+    VALUES ({', '.join('?' for _ in KNOWN_MIRROR_COLUMNS)}, ?)
+    ON CONFLICT(kind, word, source_deck) DO UPDATE SET
+        status = CASE WHEN known_words.status = 'retired' OR excluded.status = 'retired'
+                      THEN 'retired' ELSE known_words.status END,
+        lapses = MAX(COALESCE(known_words.lapses, 0), COALESCE(excluded.lapses, 0)),
+        reading = CASE WHEN known_words.reading IS NULL OR known_words.reading = ''
+                       THEN excluded.reading ELSE known_words.reading END,
+        meaning = CASE WHEN known_words.meaning IS NULL OR known_words.meaning = ''
+                       THEN excluded.meaning ELSE known_words.meaning END,
+        norm_key = COALESCE(known_words.norm_key, excluded.norm_key)
+"""
+
+def _reconcile_known_words(conn, rows):
+    """Merges mirrored known-word rows into the DB. Returns the number processed.
+    norm_key travels derived, not mirrored: computed here for new rows, while an
+    established local key (possibly built from a fuller local reading) is kept."""
+    cursor = conn.cursor()
+    merged = 0
+    for row in rows:
+        if not all(row.get(f) for f in ("kind", "word", "source_deck")):
+            continue
+        values = []
+        for c in KNOWN_MIRROR_COLUMNS:
+            v = row.get(c)
+            if c == "status":
+                v = v or "learned"
+            elif c == "lapses":
+                v = v or 0
+            values.append(v)
+        values.append(normalize_known_word(row["word"], row.get("reading")))
+        cursor.execute(_RECONCILE_KNOWN_SQL, tuple(values))
+        merged += 1
+    conn.commit()
+    return merged
+
+def _read_known_words(data_dir):
+    path = Path(data_dir) / "known_words.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
 def insert_card_records(cards, db_path=None):
     """Upserts a list of card dicts. Incomplete cards are skipped and reported."""
     conn = get_connection(db_path)
@@ -378,16 +548,18 @@ def fetch_missing_audio(db_path=None):
 
 def export_cards(data_dir=None, db_path=None):
     """Exports the whole DB to monthly-partitioned JSONL files (data/cards-YYYY-MM.jsonl,
-    partitioned on created_at). One card per line, sorted by (root_id, front) with sorted
-    JSON keys, so re-exports are byte-identical and git diffs stay minimal. Partition
-    files whose month no longer holds any cards are removed.
+    partitioned on created_at) plus the known-words mirror (data/known_words.jsonl,
+    stable fields only). One row per line, deterministic ordering and sorted JSON keys,
+    so re-exports are byte-identical and git diffs stay minimal. Partition files whose
+    month no longer holds any cards are removed.
 
-    Exporting RECONCILES FROM the partitions first, so an export can only ever add to
+    Exporting RECONCILES FROM the mirror files first, so an export can only ever add to
     what git already holds — a DB that is behind the repo (e.g. after a git pull from
-    another machine) can no longer rewrite the partitions down to its own stale state."""
+    another machine) can no longer rewrite the mirrors down to its own stale state."""
     data_dir = Path(data_dir or DATA_DIR)
     conn = get_connection(db_path)
     _reconcile_cards(conn, _read_partition_cards(data_dir))
+    _reconcile_known_words(conn, _read_known_words(data_dir))
     columns = list(CARD_COLUMNS) + ["created_at"]
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
@@ -420,13 +592,37 @@ def export_cards(data_dir=None, db_path=None):
             stale.unlink()
             removed.append(stale.name)
 
-    # The export itself changed the partition files — record their new fingerprint so
+    # Mirror the known-words registry alongside the card partitions (stable fields
+    # only — see KNOWN_MIRROR_COLUMNS). Same determinism rules: sorted rows, sorted
+    # keys, skip the write when the content is unchanged.
+    known_rows = conn.execute(
+        f"SELECT {', '.join(KNOWN_MIRROR_COLUMNS)} FROM known_words"
+        " ORDER BY kind, word, source_deck"
+    ).fetchall()
+    known_path = data_dir / "known_words.jsonl"
+    if known_rows:
+        content = "".join(
+            json.dumps(dict(zip(KNOWN_MIRROR_COLUMNS, row)), ensure_ascii=False,
+                       sort_keys=True) + "\n"
+            for row in known_rows
+        )
+        if known_path.exists() and known_path.read_text(encoding="utf-8") == content:
+            unchanged.append(known_path.name)
+        else:
+            known_path.write_text(content, encoding="utf-8")
+            written.append(known_path.name)
+    elif known_path.exists():
+        known_path.unlink()
+        removed.append(known_path.name)
+
+    # The export itself changed the mirror files — record their new fingerprint so
     # the next get_connection doesn't re-read what this DB just wrote.
     _set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
     conn.close()
 
-    return {"success": True, "total_cards": len(rows), "written": written,
-            "unchanged": unchanged, "removed": removed, "data_dir": str(data_dir)}
+    return {"success": True, "total_cards": len(rows), "known_words": len(known_rows),
+            "written": written, "unchanged": unchanged, "removed": removed,
+            "data_dir": str(data_dir)}
 
 def _read_partition_cards(data_dir):
     cards = []
@@ -458,6 +654,10 @@ def count_export_lines(data_dir=None):
     for file_path in files:
         lines += sum(1 for line in file_path.read_text(encoding="utf-8").splitlines() if line.strip())
     return len(files), lines
+
+def count_known_lines(data_dir=None):
+    """Returns the number of rows in the known_words.jsonl mirror (0 if absent)."""
+    return len(_read_known_words(data_dir or DATA_DIR))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Anki Generator DB Helper CLI")

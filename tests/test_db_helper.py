@@ -84,7 +84,8 @@ def test_check_word_reports_all_senses(tmp_path):
 def test_check_word_missing_db_returns_clean_result(tmp_path):
     # A fresh/absent DB must yield a clean negative result, not a raw traceback.
     result = check_word("承る", db_path=str(tmp_path / "fresh.db"))
-    assert result == {"exists": False, "count": 0, "matches": []}
+    assert result == {"exists": False, "count": 0, "matches": [],
+                      "known_legacy": {"exists": False, "matches": []}}
 
 def test_insert_skips_incomplete_cards(tmp_path):
     db = str(tmp_path / "test.db")
@@ -241,6 +242,144 @@ def test_get_connection_reconciles_when_partitions_change(tmp_path, monkeypatch)
         f.write(json.dumps(extra, ensure_ascii=False) + "\n")
 
     assert check_word("先方", db_path=None)["exists"] is True  # existing DB caught up
+
+def seed_known(db, rows):
+    conn = get_connection(db)
+    for r in rows:
+        conn.execute(
+            "INSERT INTO known_words (kind, word, reading, meaning, source_deck,"
+            " status, lapses, ease) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (r.get("kind", "word"), r["word"], r.get("reading", ""),
+             r.get("meaning", ""), r["source_deck"], r.get("status", "learned"),
+             r.get("lapses", 0), r.get("ease")))
+    conn.commit()
+    conn.close()
+
+def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
+    src = str(tmp_path / "src.db")
+    data_dir = tmp_path / "data"
+    seed_known(src, [
+        {"word": "大筋", "reading": "おおすじ", "meaning": "대강",
+         "source_deck": "JLPT N1", "lapses": 5, "ease": 1.9},
+        {"word": "～しか～ない", "meaning": "~밖에 없다",
+         "source_deck": "문법 N3", "kind": "grammar"},
+    ])
+
+    result = export_cards(data_dir=data_dir, db_path=src)
+    assert result["known_words"] == 2
+    assert "known_words.jsonl" in result["written"]
+    mirror = (data_dir / "known_words.jsonl").read_text(encoding="utf-8")
+    assert '"norm_key"' not in mirror  # derived, recomputable — never mirrored
+
+    # Deterministic: re-export is byte-identical.
+    result = export_cards(data_dir=data_dir, db_path=src)
+    assert "known_words.jsonl" in result["unchanged"]
+
+    # A fresh machine (empty default DB) restores the registry on first access.
+    monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "fresh.db")
+    monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    result = check_word("大筋", db_path=None)
+    assert result["exists"] is False  # no AnkiGen card
+    assert result["known_legacy"]["exists"] is True
+    match = result["known_legacy"]["matches"][0]
+    assert match["source_deck"] == "JLPT N1" and match["lapses"] == 5
+
+    # Only the stable fields travel — ease is DB-local and stays behind.
+    conn = get_connection(None)
+    assert conn.execute(
+        "SELECT ease FROM known_words WHERE word='大筋'").fetchone()[0] is None
+    conn.close()
+
+def test_known_words_reconcile_ratchets_status_and_lapses(tmp_path):
+    db = str(tmp_path / "test.db")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    seed_known(db, [
+        {"word": "A", "source_deck": "S", "status": "learned", "lapses": 2},
+        {"word": "B", "source_deck": "S", "status": "retired", "lapses": 6},
+    ])
+    # Another machine's mirror: A was retired there, B looks stale (still learned),
+    # and C is a word this DB has never seen.
+    lines = [
+        {"kind": "word", "word": "A", "source_deck": "S", "status": "retired", "lapses": 1},
+        {"kind": "word", "word": "B", "source_deck": "S", "status": "learned", "lapses": 9},
+        {"kind": "word", "word": "C", "source_deck": "S", "status": "learned", "lapses": 0},
+    ]
+    (data_dir / "known_words.jsonl").write_text(
+        "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines),
+        encoding="utf-8")
+
+    export_cards(data_dir=data_dir, db_path=db)  # merge-then-mirror
+
+    conn = get_connection(db)
+    rows = dict(
+        (w, (s, lp)) for w, s, lp in conn.execute(
+            "SELECT word, status, lapses FROM known_words"))
+    norm = dict(conn.execute("SELECT word, norm_key FROM known_words"))
+    conn.close()
+    assert rows["A"] == ("retired", 2)  # retired ratchets in, lapses keep the max
+    assert rows["B"] == ("retired", 9)  # a stale 'learned' cannot downgrade local retired
+    assert rows["C"] == ("learned", 0)  # new rows flow in
+    assert norm["C"] == "C"  # mirror-imported rows get their derived key immediately
+
+def test_check_word_matches_known_by_kanji_part(tmp_path):
+    db = str(tmp_path / "test.db")
+    seed_known(db, [{"word": "承る", "source_deck": "JLPT N1", "lapses": 3}])
+
+    # Pipeline root_ids carry the reading suffix — the bare kanji part must match.
+    assert check_word("承る(うけたまわる)", db_path=db)["known_legacy"]["exists"] is True
+    assert check_word("承る", db_path=db)["known_legacy"]["exists"] is True
+    assert check_word("未知語", db_path=db)["known_legacy"]["exists"] is False
+
+def test_normalize_known_word():
+    nk = db_helper.normalize_known_word
+    assert nk("咎める", "とがめる") == "咎める(とがめる)"
+    assert nk("とがめる", "") == "とがめる"            # kana headword stays bare
+    assert nk("大筋", "おおすじ ") == "大筋(おおすじ)"  # stray spaces dropped
+    assert nk("すてき（な）", "すてき") == "すてき"      # annotation parens stripped
+    assert nk("混む・込む", "こむ") == "混む(こむ)"      # first variant wins
+    assert nk("開く、開く", "開[あ]く、 開[ひら]く") == "開く(あく)"  # bracket furigana
+    assert nk("〜だらけ", None) == "~だらけ"            # wave dash unified
+    assert nk("", "") == ""
+
+def test_check_word_bridges_kana_headword_via_reading(tmp_path):
+    # Legacy decks may store the kana surface form while the query arrives in
+    # root_id shape — the reading part is the bridge.
+    db = str(tmp_path / "test.db")
+    seed_known(db, [{"word": "とがめる", "source_deck": "JLPT N1", "lapses": 7}])
+
+    assert check_word("咎める(とがめる)", db_path=db)["known_legacy"]["exists"] is True
+    # A bare kanji query carries no reading to bridge with (known limitation;
+    # retire-promoted's reading tier catches the pair after the card is pushed).
+    assert check_word("咎める", db_path=db)["known_legacy"]["exists"] is False
+
+def test_norm_key_backfilled_for_raw_rows(tmp_path):
+    # Rows born without a norm_key (pre-migration DBs, raw inserts) get the derived
+    # key on the next connection — matching never depends on a fresh snapshot.
+    db = str(tmp_path / "test.db")
+    seed_known(db, [{"word": "妥協", "reading": "だきょう", "source_deck": "S"}])
+
+    conn = get_connection(db)
+    key = conn.execute("SELECT norm_key FROM known_words").fetchone()[0]
+    conn.close()
+    assert key == "妥協(だきょう)"
+
+def test_norm_keys_rebuilt_when_normalizer_rules_change(tmp_path):
+    # Stored norm_keys are a cache of normalize_known_word — after a rules change
+    # (version bump) every cached key is rebuilt from the code, not trusted as data.
+    db = str(tmp_path / "test.db")
+    seed_known(db, [{"word": "妥協", "reading": "だきょう", "source_deck": "S"}])
+    conn = get_connection(db)
+    conn.execute("UPDATE known_words SET norm_key = '옛규칙키'")
+    db_helper._set_meta(conn, "norm_version", "0")  # as if written by older rules
+    conn.close()
+
+    conn = get_connection(db)
+    key = conn.execute("SELECT norm_key FROM known_words").fetchone()[0]
+    version = db_helper._get_meta(conn, "norm_version")
+    conn.close()
+    assert key == "妥協(だきょう)"
+    assert version == db_helper._NORM_VERSION
 
 def test_split_legacy_back():
     reading, meaning, tip = split_legacy_back(

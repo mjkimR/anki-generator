@@ -144,6 +144,25 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     archived = Path(result["archived_to"])
     assert archived.exists() and archived.parent.name == "done"
 
+def test_tts_receives_kana_reading_not_raw_kanji(tmp_path, monkeypatch):
+    # The card states its own reading — TTS must speak that, never re-guess the
+    # kanji (傷はじきに was misread as きず・はじき・に from raw text).
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    patch_attempts(monkeypatch, tmp_path)
+    fake_anki_online(monkeypatch)
+    spoken = []
+
+    def fake_synth(text, output_path=None, voice=None):
+        spoken.append(text)
+        return {"success": True, "output_path": "/nonexistent/tts_fake.mp3"}
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize", fake_synth)
+
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+    result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert code == 0 and result["status"] == "done"
+    assert spoken == ["かれは だきょうを こばんだ。"]
+
 def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     patch_backup(monkeypatch, tmp_path)
@@ -354,6 +373,22 @@ def test_doctor_flags_synced_cards_missing_from_anki(tmp_path, monkeypatch):
     assert notes_check["ok"] is False
     assert "1 of 1" in notes_check["detail"]
 
+def test_doctor_flags_known_words_mirror_drift(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)  # empty data dir — no known_words.jsonl
+    fake_anki_offline(monkeypatch)
+    db = str(tmp_path / "test.db")
+    conn = db_helper.get_connection(db)
+    conn.execute("INSERT INTO known_words (kind, word, source_deck)"
+                 " VALUES ('word', '大筋', 'JLPT N1')")
+    conn.commit()
+    conn.close()
+
+    result, code = pipeline.cmd_doctor(db_path=db)
+    assert code == 0 and result["status"] == "ok"  # parity drift is warn-only
+    known_check = next(c for c in result["checks"] if c["check"] == "known_words")
+    assert known_check["ok"] is False
+    assert "--export" in known_check["detail"]
+
 def test_generation_only_run_skips_anki_and_tts(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     patch_backup(monkeypatch, tmp_path)
@@ -383,6 +418,7 @@ def test_generation_only_blocks_sync_and_backfill(tmp_path, monkeypatch):
     assert code == 1 and "generation-only" in result["message"]
 
 def test_doctor_generation_only_marks_anki_disabled(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)  # isolate from the real data/ mirrors
     monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
     def boom(*args, **kwargs):
         raise AssertionError("no AnkiConnect calls expected")
@@ -418,6 +454,7 @@ def test_gc_media_removes_only_unreferenced(tmp_path, monkeypatch):
     assert referenced.exists() and not orphaned.exists()
 
 def test_doctor_core_ok_with_anki_offline(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)  # isolate from the real data/ mirrors
     fake_anki_offline(monkeypatch)
     result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
     assert code == 0

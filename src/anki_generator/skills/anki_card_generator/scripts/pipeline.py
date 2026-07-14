@@ -107,6 +107,14 @@ def export_backup(db_path=None):
     except Exception as e:
         return {"skipped": True, "reason": f"export failed: {e}"}
 
+def _tts_text(card):
+    """What TTS should speak: the kana-ized validated reading, never the raw kanji
+    sentence — the engine must not guess readings or word boundaries when the card
+    already states them (傷[きず]は じきに → きずは じきに). Falls back to `front`
+    only for legacy rows that predate structured readings."""
+    reading = card.get("back_reading", "")
+    return tts_helper.reading_to_kana(reading) if reading else card.get("front", "")
+
 def _ensure_local_audio(card, db_path=None):
     """Audio is made where it's pushed: cards persist without audio and the pushing
     machine synthesizes just before the note lands. Generation-only machines never
@@ -117,7 +125,7 @@ def _ensure_local_audio(card, db_path=None):
     audio = card.get("audio_path", "")
     if audio and Path(audio).exists():
         return None
-    tres = tts_helper.synthesize(card.get("front", ""))
+    tres = tts_helper.synthesize(_tts_text(card))
     if tres.get("success"):
         card["audio_path"] = tres["output_path"]
         db_helper.set_audio_path(card["root_id"], card["front"], tres["output_path"],
@@ -408,7 +416,7 @@ def cmd_backfill_audio(db_path=None):
                             "reason": "synced without a recorded note id (pre-tracking "
                                       "or duplicate) — update the note in Anki manually"})
             continue
-        tres = tts_helper.synthesize(card.get("front", ""))
+        tres = tts_helper.synthesize(_tts_text(card))
         if not tres.get("success"):
             errors.append({"root_id": card.get("root_id"), "error": tres.get("error")})
             continue
@@ -503,6 +511,24 @@ def cmd_doctor(db_path=None):
     except Exception as e:
         add("data_backup", False, str(e))
 
+    # Known-words registry parity (only meaningful once a snapshot exists). A JSONL
+    # surplus self-heals on the next default-DB access (reconcile-on-change), so the
+    # actionable direction is DB > JSONL.
+    try:
+        conn = db_helper.get_connection(db_path)
+        known_count = conn.execute("SELECT COUNT(*) FROM known_words").fetchone()[0]
+        conn.close()
+        known_lines = db_helper.count_known_lines()
+        if known_count or known_lines:
+            if known_count == known_lines:
+                add("known_words", True, f"{known_count} known words ↔ {known_lines} JSONL lines")
+            else:
+                add("known_words", False,
+                    f"DB has {known_count} known words but known_words.jsonl holds "
+                    f"{known_lines} lines — run db_helper.py --export and commit data/")
+    except Exception as e:
+        add("known_words", False, str(e))
+
     if not ANKI_ENABLED:
         add("anki_connect", True, "disabled (ANKI_ENABLED=0) — generation-only machine")
         return _doctor_result(checks)
@@ -549,7 +575,7 @@ def cmd_doctor(db_path=None):
 def _doctor_result(checks):
     # Anki being offline, backup drift, and note drift are recoverable states,
     # not env failures.
-    WARN_ONLY = {"anki_connect", "data_backup", "anki_notes"}
+    WARN_ONLY = {"anki_connect", "data_backup", "anki_notes", "known_words"}
     core_ok = all(c["ok"] for c in checks if c["check"] not in WARN_ONLY)
     warnings = [c["check"] for c in checks if c["check"] in WARN_ONLY and not c["ok"]]
     result = {"status": "ok" if core_ok else "error", "checks": checks}
@@ -559,6 +585,8 @@ def _doctor_result(checks):
             notes.append("Anki is offline — cards persist to the DB and sync later via sync-pending.")
         if "data_backup" in warnings:
             notes.append("DB and JSONL backup are out of sync — see the data_backup check detail.")
+        if "known_words" in warnings:
+            notes.append("Known-words registry and its JSONL mirror are out of sync — see the known_words check detail.")
         if "anki_notes" in warnings:
             notes.append("Some synced cards are missing from this Anki collection — see the anki_notes check detail.")
         result["message"] = "Core environment is healthy. " + " ".join(notes)
