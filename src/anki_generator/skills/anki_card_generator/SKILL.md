@@ -96,7 +96,8 @@ Report the final summary to the user: cards created, sense splits, sync status, 
   the next run with Anki open; to push immediately instead, the user can open Anki and run:
   `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending`
   (If the driver message says this machine is generation-only — `ANKI_ENABLED=0` — just
-  remind the user to commit `data/`; an Anki machine picks the cards up from git.)
+  remind the user to commit & push in `data/` — it is its own private repo; an Anki
+  machine picks the cards up from there.)
 * `backlog_synced` — cards left pending by earlier Anki-offline sessions were pushed along
   with this run's; mention the count.
 * `partial` — some cards failed to push; they remain recoverable via `sync-pending`. Show the
@@ -104,7 +105,8 @@ Report the final summary to the user: cards created, sense splits, sync status, 
 * `tts_warnings` — those cards were created without audio; recover later (network required)
   via:
   `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py backfill-audio`
-* If the driver reports the `data/` backup was refreshed, remind the user to commit it.
+* If the driver reports the `data/` backup was refreshed, remind the user to commit &
+  push it (`data/` is a separate private repo — commits happen inside it, not here).
 
 ### Utilities (run when relevant, not every time)
 * Environment health check (use when something seems broken, or on first run):

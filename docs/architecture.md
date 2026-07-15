@@ -20,7 +20,7 @@ graph TD
     Connector -->|AnkiConnect API| Anki[Anki Desktop App]
     Pipeline -->|mark synced=1| DB
     Pipeline -->|archive| Done["cards/done/"]
-    Pipeline -->|refresh JSONL backup| Data["data/cards/cards-YYYY-MM.jsonl"]
+    Pipeline -->|refresh JSONL backup| Data["data/cards/cards-YYYY-MM-DD.jsonl"]
 ```
 
 The agent's role is deliberately reduced to **content generation**: it writes the working file
@@ -36,25 +36,27 @@ can be ignored by a model; code cannot be.
 
 ### 0. Pipeline Driver (`pipeline.py`)
 The deterministic orchestrator. Subcommands:
-- **`run <file>`**: normalize (kyujitai→shinjitai) → validate → Korean-pass gate → **DB persist first** (`synced_to_anki=0`) → Anki push with **TTS synthesized just before each note lands** (audio is made where it's pushed — cache-keyed on voice+text, so re-runs are free) + per-card `synced=1` marking (recording the returned Anki note id) → **backlog drain** (when Anki is reachable, any cards left pending by earlier offline sessions are pushed too, reported as `backlog_synced`) → archive to `cards/done/` → refresh the `data/` JSONL backup. Emits a structured JSON status (`regenerate`/`escalate`/`need_korean`/`done`/`partial`) that is the agent's only interface. The retry cap (max 3) lives in the sidecar `cards/pending/.attempts.json` — outside the working file, so the agent rewriting the file cannot reset it; it clears once validation passes.
+- **`run <file>`**: normalize (kyujitai→shinjitai) → validate → Korean-pass gate → **DB persist first** (`synced_to_anki=0`) → Anki push with **TTS synthesized just before each note lands** (audio is made where it's pushed — cache-keyed on voice+text, so re-runs are free) + per-card `synced=1` marking (recording the returned Anki note id) → **backlog drain** (when Anki is reachable, any cards left pending by earlier offline sessions are pushed too, reported as `backlog_synced`) → **route Listening cards** into `ANKI_LISTENING_DECK` (reported as `routed_listening`; soft — never fails the push) → archive to `cards/done/` → refresh the `data/` JSONL backup. Emits a structured JSON status (`regenerate`/`escalate`/`need_korean`/`done`/`partial`) that is the agent's only interface. The retry cap (max 3) lives in the sidecar `cards/pending/.attempts.json` — outside the working file, so the agent rewriting the file cannot reset it; it clears once validation passes.
 - **`sync-pending`**: recovery path — pushes DB cards with `synced_to_anki=0` (e.g. created while Anki was offline) and marks them synced. Since online `run`s drain the backlog automatically, this is only needed when no new card session is coming.
+- **`sync-decks`**: routes the audio-first `Listening` cards out of the vocab deck into `ANKI_LISTENING_DECK` (`route_listening_cards()`). `run` and `sync-pending` already do this after pushing; the standalone command drains the one-time backlog when the `Listening` template is first added (it also *adds* the template via `connect_anki` → `ensure_note_model`) and lets the routing be re-run by hand. No DB involvement.
 - **`backfill-audio`**: repairs **synced-but-silent notes** — finds synced DB rows with an empty `audio_path` (TTS failed at push time), synthesizes the audio, updates the note's `Audio` field via the stored `anki_note_id` (`updateNoteFields` — no other field is touched), then records the file in the DB. Cards are skipped (not half-fixed) while Anki is offline or when no note id was recorded, so a later run still finds them; pending cards are never touched — their audio is made at push time.
-- **`doctor`**: end-to-end environment check (janome, joyokanji, edge-tts, DB schema, media dir, DB↔JSONL parity for both cards and the known-words registry, AnkiConnect + note model). When Anki is reachable it also deep-checks that every note the DB believes is synced actually exists in this collection (`anki_notes` — catches an un-synced AnkiWeb state or notes deleted inside Anki). Anki being offline is a warning, not a failure.
+- **`doctor`**: end-to-end environment check (janome, joyokanji, edge-tts, DB schema, media dir, the gitignored `.agents/skills` skill symlink — forgotten on every fresh clone, so doctor points at `./setup_symlinks.sh` — DB↔JSONL parity for both cards and the known-words registry, AnkiConnect + note model). When Anki is reachable it also deep-checks that every note the DB believes is synced actually exists in this collection (`anki_notes` — catches an un-synced AnkiWeb state or notes deleted inside Anki). Anki being offline is a warning, not a failure.
 - **`gc-media`**: deletes `media/*.mp3` referenced by neither the DB nor any pending working file.
 
 ### 1. Configuration (`src/anki_generator/config.py`)
 Centralizes application settings, loading environment variables from `.env` with fallback defaults:
-- **Paths**: Project root, SQLite DB path (`anki_generator.db`), audio output directory (`media/`), and card working directories (`cards/pending/`, `cards/done/`).
-- **Anki Integration**: URL endpoint (default: `http://localhost:8765`), target deck (default: `Japanese::Vocabulary`), note model override (`ANKI_NOTE_MODEL`), and the per-machine `ANKI_ENABLED` switch (`0` declares a generation-only machine — see *Offline Behavior*; `.env` is gitignored, so this is set once per machine).
+- **Paths**: Project root, SQLite DB path (`anki_generator.db`), audio output directory (`media/`), card working directories (`cards/pending/`, `cards/done/`), and the `data/` mirror directory — a clone of the separate private data repository (see *Multiple Machines*) — with centralized subdirectory helpers (`cards/`, `known_words/`; `attempts/` and `confusions/` reserved for the planned data-layer tables).
+- **Anki Integration**: URL endpoint (default: `http://localhost:8765`), target deck (default: `Japanese::Vocabulary`), the listening-card deck `ANKI_LISTENING_DECK` (default: `Japanese::Listening` — set per-machine in `.env` alongside the vocab deck; its own new-cards/day limit throttles the listening backlog), note model override (`ANKI_NOTE_MODEL`), and the per-machine `ANKI_ENABLED` switch (`0` declares a generation-only machine — see *Offline Behavior*; `.env` is gitignored, so this is set once per machine).
 - **TTS**: Microsoft Edge voice profile (default: `ja-JP-NanamiNeural`).
 
 ### 2. Database Helper (`db_helper.py`)
 Interacts with the local SQLite database (`anki_generator.db`) which serves as the "Source of Truth" for generated card histories:
-- **Schema**: keyed on `UNIQUE(root_id, front)` — not `root_id` alone — so polysemous words can own one card per sense without clobbering each other. Re-inserting the same sense upserts in place, keeping the row id and (unless the card carries an explicit timestamp) its original `created_at`, so cards never drift between monthly backup partitions. The card back is stored structurally (`back_reading` JA / `back_meaning` KO / `back_tip` KO); the combined Anki string is composed only at push time. `audio_path` holds a **bare file name** (resolved against `media/` on read) so the DB and its JSONL export survive repo moves; `anki_note_id` records the Anki note created at push time, keeping later note updates/deletes possible.
+- **Schema**: keyed on `UNIQUE(root_id, front)` — not `root_id` alone — so polysemous words can own one card per sense without clobbering each other. Re-inserting the same sense upserts in place, keeping the row id and (unless the card carries an explicit timestamp) its original `created_at`, so cards never drift between backup partitions. The card back is stored structurally (`back_reading` JA / `back_meaning` KO / `back_tip` KO); the combined Anki string is composed only at push time. `audio_path` holds a **bare file name** (resolved against `media/` on read) so the DB and its JSONL export survive repo moves; `anki_note_id` records the Anki note created at push time, keeping later note updates/deletes possible.
 - **Auto-init/migration/reconcile**: every connection ensures the schema exists and transparently migrates both legacy layouts (`root_id PRIMARY KEY`, combined `back` column — split best-effort on `[뜻]`/`[Tip]` markers). The default DB **reconciles from the `data/cards/` JSONL partitions whenever they changed** (tracked by a name/mtime/size fingerprint in a `meta` table, so the steady-state cost is one `stat()` per file): a fresh clone rebuilds the DB, and a `git pull` that brought cards from another machine reaches the existing DB on its next touch — `--check` never reports pulled words as new. The reconcile merge keeps content fields local and merges **sync state monotonically** (`synced_to_anki` only ratchets up, `anki_note_id`/`audio_path` fill in when missing locally), so a stale partition can't downgrade a freshly synced row and a card pushed on another machine is never re-pushed here.
-- **JSONL backup**: `export_cards()` **reconciles from the partitions first, then mirrors** the whole DB to `data/cards/cards-YYYY-MM.jsonl` (partitioned on `created_at`, deterministic ordering → minimal git diffs) — an export can only ever add to what git holds, never rewrite it down to a stale DB's state. `import_cards_data()` is the full restore (JSONL wins). The pipeline refreshes the export after every persisting run. Consequence: dropping a DB row alone gets resurrected from git — real deletion is the future delete-sync flow's job (tombstones).
+- **JSONL backup**: `export_cards()` **reconciles from the partitions first, then mirrors** the whole DB to `data/cards/cards-YYYY-MM-DD.jsonl` (daily partitions on `created_at` — bounded file sizes; deterministic ordering → minimal git diffs) — an export can only ever add to what git holds, never rewrite it down to a stale DB's state. Files the current partition scheme no longer produces are cleaned up after the reconcile, which is also how a scheme change (e.g. the 2026-07-15 monthly→daily switch) migrates itself on the first export. `import_cards_data()` is the full restore (JSONL wins). The pipeline refreshes the export after every persisting run. Consequence: dropping a DB row alone gets resurrected from git — real deletion is the future delete-sync flow's job (tombstones).
 - **Sync tracking**: `mark_synced(root_id, front, note_id)` and `fetch_pending()` back the pipeline's DB-first ordering and the `sync-pending` recovery path.
-- **Known-words registry** (`known_words` table): the legacy-deck snapshot written by `legacy_helper.py` (see below), keyed on `(kind, word, source_deck)`. Only the stable fields (identity, status, lapses) are mirrored to `data/known_words/known_words.jsonl` — fast-drifting review stats (ease/ivl/reps) stay DB-local, with Anki as their source of truth — so the mirror's git rhythm is one big initial commit, then small status diffs. The registry rides the same reconcile-on-change (status ratchets to `retired`, lapses ratchet up) and merge-then-mirror export as cards, so it travels to generation-only machines via git. Each row also carries a derived `norm_key` (root_id-shaped matching key — see §6) that is never mirrored: the code (`normalize_known_word`), not any stored copy, is its source of truth — it is recomputed on reconcile, backfilled for NULL rows on every connection, and fully rebuilt once when the normalizer's rules version (`_NORM_VERSION`) changes.
+- **Exposure cache** (`card_lemmas` table): the expensive half of the exposure counter — each card's content-word lemmas (Janome base forms of `back_reading`, bracket furigana stripped, grammar POS filtered), keyed on a hash of the extraction-rules version + `back_reading`. `refresh_card_lemmas()` is a lazy sweep run by consumers (e.g. `legacy_helper.py coverage`), never on the reconcile hot path: only missing/stale cards re-tokenize, and the hash makes it self-healing for cards that arrived via git. Pure derived data — no JSONL mirror, no doctor parity; the exposure *aggregate* is never stored at all (consumers join against `known_words` live), so registry changes reflect automatically and counters cannot drift.
+- **Known-words registry** (`known_words` table): the legacy-deck snapshot written by `legacy_helper.py` (see below), keyed on `(kind, word, source_deck)`. Only the stable fields (identity, status, lapses) are mirrored to `data/known_words/known_words-<source>.jsonl` — one partition per registered source (`source_deck` is part of the primary key, so rows never migrate between files; a date split would need a creation date the registry doesn't have) — while fast-drifting review stats (ease/ivl/reps) stay DB-local, with Anki as their source of truth. The mirror's git rhythm is one big initial commit, then small status diffs. Retirement carries write-once metadata (`retired_at`, `retired_reason` — 'promoted' / 'manual' / 'retirement-pass'), mirrored with NULL fields omitted so the learned majority stays compact. The registry rides the same reconcile-on-change (status ratchets to `retired`, lapses ratchet up, retirement metadata fills when locally missing but never overwrites a local stamp) and merge-then-mirror export as cards, so it travels to generation-only machines via git. Each row also carries a derived `norm_key` (root_id-shaped matching key — see §6) that is never mirrored: the code (`normalize_known_word`), not any stored copy, is its source of truth — it is recomputed on reconcile, backfilled for NULL rows on every connection, and fully rebuilt once when the normalizer's rules version (`_NORM_VERSION`) changes.
 - CLI: `--init`, `--check <word>` (exact + kanji-part prefix lookup reporting **all** sense matches, plus a `known_legacy` block when the word already lives in the legacy decks), `--insert <path>` (incomplete cards skipped and reported), `--pending` (list unsynced cards), `--export` / `--import` (JSONL backup in both directions).
 
 ### 3. Validator (`validator.py`)
@@ -84,14 +86,17 @@ machine-local and would not travel with the git-carried cards anyway):
 ### 5. Anki Connector (`anki_connector.py`)
 Exposes integration utilities to communicate with the Anki Desktop App via `AnkiConnect`:
 - Connects to the HTTP API to query active decks, create new decks dynamically, and upload media files (`storeMediaFile`).
-- **Repo-owned note model**: `ensure_note_model()` creates the `AnkiGen JA` model (fields `Front` / `Reading` / `Meaning` / `Tip` / `Audio` / `RootId` — the last is never rendered; it lets Anki-side features like leech rescue and flag harvesting identify the word without the note-id ↔ DB join) in Anki when missing and syncs its styling and templates from the git-managed `anki_model/` files (`style.css`, `front.html`, `back.html`) whenever they drift — the repo, not the Anki profile, owns the card look. A same-named model with a foreign field layout is refused rather than mutated.
+- **Repo-owned note model**: `ensure_note_model()` creates the `AnkiGen JA` model (fields `Front` / `Reading` / `Meaning` / `Tip` / `Audio` / `RootId` — the last is never rendered; it lets Anki-side features like leech rescue and flag harvesting identify the word without the note-id ↔ DB join) in Anki when missing and syncs its styling and templates from the git-managed `anki_model/` files whenever they drift — the repo, not the Anki profile, owns the card look. A same-named model with a foreign field layout is refused rather than mutated.
+- **Two card templates on that one model**, both git-managed: **`Card 1`** (vocab — `front.html`/`back.html`) and **`Listening`** (audio-first — `front_listening.html`/`back_listening.html`, front = play button only, back reveals sentence + furigana + meaning). The listening front wraps everything in `{{#Audio}}…{{/Audio}}`, so a note with no audio grows **no** listening card — that conditional is the gate. Templates Anki is missing are **added** (`modelTemplateAdd`), never recreated, so retrofitting `Listening` onto an existing deck spawns its cards for every audio-carrying note at once while leaving the vocab cards and their review history untouched. `Card 1` stays ordinal 0.
+- **Code-owned listening-deck routing** (`route_listening_cards()`): AnkiConnect exposes no per-template Deck Override, so a `Listening` card is born in the note's own deck (the vocab deck) and this sweep moves it to `ANKI_LISTENING_DECK` via `findCards`(`note:… deck:… card:"Listening"`) → `changeDeck`. Idempotent (a moved card no longer matches), so it doubles as the drain for the one-time backlog after the template is added. The listening deck's own new-cards/day limit throttles that backlog; sibling burying (note-scoped) keeps the vocab and listening cards of one word off the same day automatically.
 - `push_card()` maps the structured card straight onto the note fields (no combined back string): the `*target*` marker in `front` becomes `<span class="t">` via `marker_to_html()`, `back_reading`'s bracket furigana is rendered as ruby by the `{{furigana:Reading}}` template filter, and audio lands in its own `Audio` field — **played on the back only** (user decision 2026-07-14: front-side autoplay interferes with practicing kanji reading; the answer side is where the sound belongs). Returns `('synced', note_id)` / `('duplicate', None)` (duplicates are treated as already-synced) or raises for per-card error recording; the note id is persisted to the DB so notes can be updated or deleted later.
 - The standalone CLI (`anki_connector.py <file>`) remains for manual pushes; the pipeline uses the same primitives with DB-first ordering.
 - Emits diagnostics on stderr; stdout carries only the final JSON result for the orchestrating agent.
 
 ### 6. Legacy Migration Helper (`legacy_helper.py`)
-Deterministic mechanics for the shrink-first legacy-deck migration (design and scope
-decisions: `docs/roadmap.md` → *Legacy Deck Migration*). No LLM anywhere, and **nothing
+Deterministic mechanics for the shrink-first legacy-deck migration (strategy and
+remaining plan: `docs/roadmap.md` → *Legacy Deck Migration*; shipped rounds and
+settled decisions: `docs/history.md`). No LLM anywhere, and **nothing
 about the user's collection is hardcoded** — the tools are generic, sources are
 registered *data* (full spec per source in the DB `meta` table, `known_sources`), and
 the *judgment* — which deck, what its fields mean — belongs to the agent conversation
@@ -130,7 +135,17 @@ the *judgment* — which deck, what its fields mean — belongs to the agent con
   machines. Reading-only matches come back as **`needs_review`** instead of being
   acted on; the agent/user compare meanings and close confirmed pairs with
   **`retire-word <word>`** (which doubles as the manual "I simply know this word"
-  switch). Needs Anki open.
+  switch). Retiring stamps the write-once metadata: `retire-promoted` records
+  `retired_reason='promoted'`, `retire-word` records `'manual'`. Needs Anki open.
+- **`retired-list`**: audit view of the retirement ledger — retired words grouped
+  across sources with when and why (`--reason` filters). Reads only the DB, so it
+  works on Anki-less machines.
+- **`coverage`**: the exposure report — refreshes the `card_lemmas` cache (lazy
+  sweep, see `db_helper` above), then live-joins it against the registry per
+  source/status. **Exact tier** (kanji lemma ↔ norm_key word part) counts as
+  exposed; **reading_only** (kana↔kana — a homophone matches identically) is
+  reported in its own column and never acted on. Also lists the top exact-exposed
+  learned words — the evidence feed for the future retirement pass. DB-only.
 - **`archive-duplicates`**: when a deck holds several notes per group-field value,
   keep the calmest one (fewest lapses, then longest interval — resets come from hard
   words in the example, so the least-troublesome example survives) and archive the
@@ -160,8 +175,8 @@ plus an instruction to run `sync-pending` later.
 
 A machine that will *never* run Anki can declare it: **`ANKI_ENABLED=0`** in its
 (gitignored) `.env`. The pipeline then skips the connection attempt entirely, the run
-message says committing `data/` is all that's needed (instead of telling the user to
-open Anki), `doctor` reports the Anki checks as intentionally disabled, and
+message says committing & pushing the `data/` repo is all that's needed (instead of
+telling the user to open Anki), `doctor` reports the Anki checks as intentionally disabled, and
 `sync-pending`/`backfill-audio` decline with a pointer to an Anki-equipped machine.
 
 Reconciliation is automatic: **the next `run` with Anki reachable drains the whole
@@ -184,8 +199,12 @@ note in place.
 ## Multiple Machines
 
 Cards — and the known-words registry, which rides the same rails — travel between
-machines through **git** (the `data/cards/` mirrors) and through **AnkiWeb** (the Anki
-collection); the SQLite DB and `media/` stay local. Four mechanisms make that safe:
+machines through **git** (the `data/` mirrors) and through **AnkiWeb** (the Anki
+collection); the SQLite DB and `media/` stay local. `data/` is not part of this repo:
+it is a **separate, private repository** cloned into the working tree (`./setup.sh
+<data-repo-url>`) and gitignored here, so the code repo can stay public without
+carrying personal card data. "Commit `data/`" therefore always means commit & push
+*inside* that clone. Four mechanisms make the git leg safe:
 
 1. **Reconcile-on-change** — after a `git pull`, the next DB touch merges the
    partitions in (see `db_helper` above). Machine B immediately knows machine A's
@@ -198,9 +217,11 @@ collection); the SQLite DB and `media/` stay local. Four mechanisms make that sa
    key makes re-runs free). A generation-only machine therefore produces no mp3s at
    all — nothing local is lost when cards travel. If synthesis fails at push time, the
    card pushes silent with `audio_path` left empty, so `backfill-audio` still finds it.
-4. **Union merge for partitions** — `.gitattributes` sets `data/cards/*.jsonl` and `data/known_words/*.jsonl` to `merge=union`:
-   both machines appending cards to the same monthly file no longer conflicts; the
-   next run reconciles + re-exports a clean deterministic file.
+4. **Union merge for partitions** — the **data repo's** `.gitattributes` (materialized
+   by `setup.sh` when missing) sets `*.jsonl` to `merge=union`: both machines appending
+   cards to the same partition file no longer conflicts; the next run reconciles +
+   re-exports a clean deterministic file. Safe because every file there is a
+   reconcile-then-re-export mirror — duplicates and misordering never survive a run.
 
 **One discipline rule remains: on a new machine, sync Anki (AnkiWeb) *before* the
 first push.** Note-model creation is a collection schema change, and if two profiles

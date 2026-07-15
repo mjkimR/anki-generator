@@ -2,7 +2,8 @@
 
 Read this when the user wants to work on the **legacy decks**: promote weak words
 (승격), absorb another deck into the known-words registry, or compress duplicate
-notes. Strategy and history: `docs/roadmap.md` → *Legacy Deck Migration*. All commands
+notes. Strategy and remaining plan: `docs/roadmap.md` → *Legacy Deck Migration*;
+shipped rounds and settled decisions: `docs/history.md`. All commands
 below are `uv run python src/anki_generator/skills/anki_card_generator/scripts/legacy_helper.py ...`
 and print JSON; archive operations are reversible (suspend + tag `ankigen-retired`,
 never deletion).
@@ -25,7 +26,8 @@ never deletion).
    `legacy_helper.py retire-word "<word>"`; a homophone → leave it learned.
    Ask the user when unsure. (`retire-word` also serves the manual case: the user
    says they simply know a word and want its legacy cards gone.)
-5. Remind the user to commit `data/` (the registry status changes are mirrored there).
+5. Remind the user to commit & push in `data/` (a separate private repo — the registry
+   status changes are mirrored there).
 
 ## Registering a deck into the registry
 
@@ -51,4 +53,13 @@ yours/the user's; execution is code.
    deck holds several notes per group value, offer compression:
    `legacy_helper.py archive-duplicates --deck "<deck>" --group-field X` — always show
    the dry-run numbers first and get an explicit go before `--apply`.
-5. Remind the user to commit `data/` afterwards.
+5. Remind the user to commit & push in `data/` afterwards.
+
+## Auditing & coverage (DB-only — no Anki needed)
+
+- `legacy_helper.py retired-list` (`--reason promoted|manual|retirement-pass`) — the
+  retirement ledger: which words retired, when, and why.
+- `legacy_helper.py coverage` — exposure report: how much of the registry the
+  new-deck example sentences already touch, per source. Exact-tier matches are
+  trustworthy; `reading_only` (kana↔kana) can be homophones and is never acted on.
+  Exposure justifies retiring *easy* words, never weak ones.

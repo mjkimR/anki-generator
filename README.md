@@ -16,24 +16,31 @@ It takes Japanese words, inflections, or sentences, extracts high-value targets,
 ## Project Structure
 
 - `src/`: Main source files, scripts, and agent skill configurations.
-- `data/cards/` & `data/known_words/`: Git-tracked JSONL mirrors of the DB — card history (monthly partitions)
-  and the known-words registry snapshot of the legacy decks.
-- `docs/`: Design architecture, schema validation rules, and the skill/system roadmap.
+- `data/`: **a clone of your separate, private data repository** (gitignored by this repo) —
+  JSONL mirrors of the DB: card history under `data/cards/` (daily partitions) and the
+  known-words registry snapshot of the legacy decks under `data/known_words/` (one
+  partition per source).
+- `docs/`: Design architecture, schema validation rules, the forward-looking roadmap,
+  the implementation history / settled-decision log, the day-to-day user guide
+  (`docs/user_guide/` — English + Korean), and the contributor/coding-agent guide
+  (`docs/development.md`).
 - `tests/`: Automated unit tests for card verification.
 
 ## Data & Backup
 
 The gitignored SQLite DB (`anki_generator.db`) is the source of truth. Every pipeline run
-refreshes a git-friendly mirror of it under `data/cards/` — deterministic, monthly-partitioned
-JSONL whose diffs stay minimal. Commit those files to keep your card history in git.
+refreshes a git-friendly mirror of it under `data/cards/` — deterministic, daily-partitioned
+JSONL whose diffs stay minimal. `data/` is its **own git repository**: a private repo cloned
+into the working tree (`./setup.sh <data-repo-url>`), so the code repo stays public while
+your personal card data stays private. Backing up = committing & pushing **inside `data/`**.
 
 - **Restore/merge is automatic**: a fresh clone rebuilds `anki_generator.db` from
   `data/cards/`, and after a `git pull` the next DB access merges in cards pulled from
   another machine (manual equivalent: `db_helper.py --import`).
-- **Multiple machines work**: cards travel via git, the Anki collection via AnkiWeb;
-  exports only ever add to `data/cards/`, and audio is synthesized at push time by whichever
-  machine pushes. A machine without Anki sets `ANKI_ENABLED=0` in its `.env`
-  (generation-only mode: commit `data/` and you're done). One rule: on a new Anki
+- **Multiple machines work**: cards travel via the data repo, the Anki collection via
+  AnkiWeb; exports only ever add to `data/cards/`, and audio is synthesized at push time by
+  whichever machine pushes. A machine without Anki sets `ANKI_ENABLED=0` in its `.env`
+  (generation-only mode: commit & push in `data/` and you're done). One rule: on a new Anki
   machine, sync Anki once before the first push. See `docs/architecture.md` →
   *Multiple Machines*.
 - **Anki can stay closed**: cards persist locally as pending and the next pipeline run
@@ -41,8 +48,8 @@ JSONL whose diffs stay minimal. Commit those files to keep your card history in 
   `pipeline.py backfill-audio` repairs cards whose TTS failed). See
   `docs/architecture.md` → *Offline Behavior*.
 - **Known-words registry**: `legacy_helper.py snapshot` mirrors the legacy Anki decks
-  into `data/known_words/known_words.jsonl` so `--check` also answers "already known from the old
-  decks", and `legacy_helper.py weak-queue` ranks which legacy words deserve a
+  into per-source partitions under `data/known_words/` so `--check` also answers "already
+  known from the old decks", and `legacy_helper.py weak-queue` ranks which legacy words deserve a
   regenerated card (the shrink-first migration — see `docs/roadmap.md`).
 - `pipeline.py doctor` verifies the DB and the JSONL mirror stay in sync and tells you
   whether `--export` or `--import` is the right direction to fix a drift.
@@ -58,20 +65,28 @@ JSONL whose diffs stay minimal. Commit those files to keep your card history in 
 ### Installation Steps
 
 1. Clone this repository.
-2. Install Python dependencies:
+2. Create a **private** repository for your card data (an empty one is fine) — the
+   generated JSONL mirrors are personal data and live outside this public code repo.
+3. Run the setup script with that repo's URL:
    ```bash
-   uv sync
+   ./setup.sh https://github.com/<you>/<your-anki-data-repo>
    ```
-3. Set up the symbolic links for the AI Agent:
-   ```bash
-   chmod +x setup_symlinks.sh
-   ./setup_symlinks.sh
-   ```
-4. Initialize the SQLite database (on a clone that already has `data/cards/` partitions this
-   automatically restores every card):
-   ```bash
-   uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --init
-   ```
+   It installs dependencies (`uv sync`), links the agent skill, clones the data repo into
+   `data/`, materializes the union-merge `.gitattributes` inside it, and initializes the
+   SQLite DB (on a data clone that already has `data/cards/` partitions this automatically
+   restores every card). Re-running is idempotent; with `data/` already in place the URL
+   can be omitted.
+
+<details>
+<summary>Manual equivalent</summary>
+
+```bash
+uv sync
+./setup_symlinks.sh
+git clone <your-anki-data-repo> data
+uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --init
+```
+</details>
 
 ## Running Tests
 

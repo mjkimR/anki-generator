@@ -1,16 +1,10 @@
 # Roadmap & System Design Notes
 
 Working notes for the next skills/systems around the card pipeline. These decisions came
-out of design sessions on 2026-07-08 (later additions dated per section). **Unless marked
-Done, nothing below is implemented yet** — this file is the reference to build from, and
-should be updated as pieces land.
-
-> **Pre-applied foundations (2026-07-08)** — two changes were made ahead of time because
-> they are only free *before* the first card/push and would need migrations afterwards:
-> the TTS cache key includes the voice (`tts_<md5 of voice + cleaned text>.mp3`), and the
-> note model carries an unrendered `RootId` field so Anki-side features (leech rescue,
-> flag harvest) can identify words without the note-id ↔ DB join. Everything else below
-> is additive and safe to build whenever.
+out of design sessions on 2026-07-08 (later additions dated per section). **Nothing below
+is implemented yet** — this file is the forward-looking reference to build from. When a
+piece lands, its record (with the measured numbers) moves to `docs/history.md`; current
+behavior is documented in `docs/architecture.md`.
 
 ---
 
@@ -20,8 +14,8 @@ All practice/confusion data lives in the **local SQLite DB** (`anki_generator.db
 alongside `cards` — never inside Anki. Anki holds study material only; process data
 stays on our side of the AnkiConnect boundary (no round-trip dependency, no pollution
 of the scheduler's database). Each new table follows the `cards` pattern: a
-deterministic JSONL mirror under `data/` so git stays the backup layer, and a
-`doctor` parity check per mirrored table.
+deterministic JSONL mirror under `data/` (the private data repo) so git stays the
+backup layer, and a `doctor` parity check per mirrored table.
 
 ### `attempts` — output-practice log (append-only)
 
@@ -35,8 +29,9 @@ deterministic JSONL mirror under `data/` so git stays the backup layer, and a
 | `confused_with` | word actually used when `wrong-word` (feeds confusion capture) |
 | `created_at` | |
 
-Mirror: `data/cards/attempts-YYYY-MM.jsonl` (monthly partitions, same determinism rules as
-cards). Append-only data suits JSONL especially well — diffs are always pure additions.
+Mirror: `data/attempts/attempts-YYYY-MM-DD.jsonl` (daily partitions, same determinism
+rules as cards; the subdir is already reserved in `config.py`). Append-only data suits
+JSONL especially well — diffs are always pure additions.
 
 ### `confusions` — confusable word **groups**, not pairs
 
@@ -52,7 +47,7 @@ member groups, so the schema is group-based from the start:
 | `source` | `flag-harvest` / `conversation` / `output-practice` |
 | `created_at` | |
 
-Mirror: `data/cards/confusions.jsonl`.
+Mirror: `data/confusions/confusions.jsonl` (subdir reserved in `config.py`).
 
 ---
 
@@ -65,6 +60,16 @@ weak direction that recognition-based cards don't train.
   AnkiConnect (`findCards` with `prop:lapses>N` / low ease, `cardsInfo`) and join back
   to the local DB through the stored `anki_note_id`. The weak list is always live.
   Fallback when Anki is offline: recent `attempts` failures.
+- **Retired words are a standing practice pool too (settled 2026-07-15)**: the
+  registry is a permanently managed vocabulary asset, not legacy_helper bookkeeping.
+  Practice sessions mix in retired words as a low-frequency maintenance rotation,
+  staleness-ordered (last exposure via `card_lemmas` ↔ `cards.created_at`, last
+  practice via `attempts` dates — all derived, nothing new to maintain). This closes
+  the exposure caveat: an attempt is *active recall* evidence that incidental
+  exposure can't provide, and a failed attempt on a retired word is the recapture
+  signal that feeds re-promotion. `retired_reason` picks the rotation — only
+  'retirement-pass'/'manual' words need it (no active card); 'promoted' words are
+  already covered by normal weak sourcing.
 - **Fresh sentences only** — never reuse the card's example sentence. Reusing tests
   recall of a memorized string; a new sentence tests transfer.
 - **Mechanical grading assist**: lemmatize the user's answer with Janome and check that
@@ -136,14 +141,48 @@ which keeps `lapses` a clean weakness signal.
 
 ## Backlog (agreed, in rough order)
 
-1. **Leech rescue** — detect leeches (`prop:lapses>=8` or `tag:leech`), regenerate the
-   example sentence (bad sentences are a common leech cause), update the note in place
-   via `updateNoteFields` using the stored `anki_note_id`. Independent of the skills
-   above; small scope.
-2. **Listening-first card template** — a second card template on the existing note
-   model (front: `{{Audio}}` only; back: sentence/reading/meaning). Nearly free since
-   templates are git-managed. **Blocked on: user checks edge-tts audio quality on real
-   cards first.**
+1. **Leech rescue — diagnose first, then treat (reshaped 2026-07-15).** Detection
+   stays mechanical (`prop:lapses>=8` or `tag:leech`), but a leech triggers a
+   *consultation*, not an automatic fix — it feeds the same interview flow as flag
+   harvest (Skill 2), a stat-based entry point beside the user's flags. Rationale
+   (user, 2026-07-15): example quality is good, so "bad sentence" is rarely the actual
+   cause; the common real failure is a *non-target* word in the example being misread
+   or not understood, which fails the whole card regardless of the target. Prescription
+   menu per diagnosis (mirrors the failure-mode table above): promote the unknown
+   example word to its own card • check that word's existing card (legacy registry or
+   AnkiGen) • name a reading trap in `back_tip` • regenerate the example (one option,
+   not the default) • retire the card. In-place edits ride `updateNoteFields` via the
+   stored `anki_note_id` — generalize `update_note_audio()` rather than grow parallel
+   helpers.
+2. **Listening-first card template — code shipped 2026-07-15, pending live verify.**
+   A second card template (`Listening`) on the existing `AnkiGen JA` model (front:
+   audio-only; back: sentence/reading/meaning). Nearly free since templates are
+   git-managed. Unblocked: audio quality judged fine in real use (user, 2026-07-15).
+   **Settled 2026-07-15: listening cards live in a separate deck** (`ANKI_LISTENING_DECK`,
+   default `Japanese::Listening`, per-machine in `.env`), and — chosen 2026-07-15 —
+   **deck routing is code-owned, not the manual per-template Deck Override**. What shipped
+   (unit-tested; current behavior in `docs/architecture.md` §0 & §5):
+   - Template files `front_listening.html` (whole front wrapped in `{{#Audio}}…{{/Audio}}`,
+     so silent notes grow no listening card — the gate) / `back_listening.html`, plus a
+     `.listen-prompt` style. `anki_model/` generalized to an ordered template list; `Card 1`
+     stays ordinal 0.
+   - `ensure_note_model()` **adds** missing templates via `modelTemplateAdd` (never
+     recreates), so retrofitting `Listening` onto the live deck keeps existing cards +
+     review history. AnkiConnect API confirmed (`modelTemplateAdd`/`changeDeck`/`findCards`).
+   - `route_listening_cards()` (`findCards`→`changeDeck`) sweeps listening cards into their
+     deck; idempotent, so it also drains the one-time retrofit backlog. Wired into `run` /
+     `sync-pending`, plus a standalone `sync-decks` command.
+   Adding the template spawns a listening card for every audio-carrying note at once — the
+   listening deck's own new-cards/day limit throttles that backlog naturally. Sibling
+   burying is note-scoped, so same-day double exposure stays prevented across decks.
+   **Remaining (needs Anki on):** run `sync-decks` (or any push) against the live
+   collection to add the template + route the backlog; then in Anki set the listening
+   deck's new-cards/day limit. The default `Japanese::Listening` is already correct — new
+   AnkiGen cards keep the `Japanese::*` namespace to stay distinct from the `學習::*`
+   legacy hierarchy (user, 2026-07-15), so no `.env` deck override is needed. Move this
+   record to `docs/history.md` with the measured card counts once verified live. (Anki was
+   offline on 2026-07-15; only ~7 pilot cards exist in Anki, 143 still DB-pending — so the
+   retrofit is tiny and low-risk.)
 3. **Text-mining batch mode** — long text in → batch-extract N1+ candidates →
    batch `--check` dedup → user confirms the list → pipeline runs per word.
 4. **Weekly stats routine** — review stats summary, leech list, output-practice
@@ -171,16 +210,17 @@ client** — no AnkiConnect/desktop app required.
   hits at "number of real card sessions per day" — indistinguishable from manual
   syncing. The bad pattern (and the ban stories) is content-free high-frequency
   polling, which the guard rules out by construction.
-- **Step 2 (unattended, cloud):** GitHub Actions (push-trigger on `data/` + daily
-  cron): JSONL → auto-restore DB → second `anki_connector` backend that manipulates
-  the collection via the `anki` library → AnkiWeb pull, add pending notes/media,
-  AnkiWeb push → bot-commit the updated `data/` (note ids, synced flags) with
-  `[skip ci]`. Everything else (pending tracking, idempotent push, note-id capture)
-  is already built. Hard rules: **abort on any full-sync requirement** (never pick a
-  direction automatically — review history is at stake); AnkiWeb credentials live in
-  GitHub secrets; keep the frequency modest (client protocol, not a public API).
-- **Rejected: .apkg via releases/artifacts** — manual import per device, and it
-  conflicts with the note-id-tracked in-place-update model (backfill, leech rescue).
+- **Step 2 (unattended, cloud):** GitHub Actions **in the private data repo**
+  (push-trigger + daily cron): JSONL → auto-restore DB → second `anki_connector`
+  backend that manipulates the collection via the `anki` library → AnkiWeb pull, add
+  pending notes/media, AnkiWeb push → bot-commit the updated mirrors (note ids,
+  synced flags) with `[skip ci]`. Everything else (pending tracking, idempotent push,
+  note-id capture) is already built. Hard rules: **abort on any full-sync requirement**
+  (never pick a direction automatically — review history is at stake); AnkiWeb
+  credentials live in the data repo's GitHub secrets; keep the frequency modest
+  (client protocol, not a public API).
+- **Rejected: .apkg via releases/artifacts** — see `docs/history.md` → *Settled
+  decisions*.
 
 ---
 
@@ -190,113 +230,75 @@ client** — no AnkiConnect/desktop app required.
 template someday), the legacy collection gradually retires into (a) a registry row per
 known word, (b) incidental exposure inside new-deck example sentences, and (c) a small
 number of regenerated AnkiGen cards for genuinely weak words. Mass migration stays
-rejected — 98.6% of the studied decks is mature and healthy; migrating them would
-discard review history to recreate content nobody struggles with.
+rejected (`docs/history.md` → *Settled decisions*).
 
-**Survey facts (2026-07-14, via AnkiConnect):**
+**The foundation shipped on 2026-07-14** — known_words registry, snapshot/weak-queue/
+retire-promoted/retire-word tooling, grammar compression, deck-agnostic generalization
+(Phases A+B), identity normalization (Levels 1+2). Survey facts and measured numbers:
+`docs/history.md`; current behavior: `docs/architecture.md` §6; session recipes: the
+skill's `legacy_migration.md`. Archive semantics everywhere stay **suspend + tag
+`ankigen-retired`** — reversible, review history preserved, batched, idempotent.
 
-- **語彙 N4~N1** (9,439 notes): fully mature, recognition-only cards (word front →
-  meaning back; no examples, no audio). Weak tail: **566 notes with lapses≥4**
-  (concentrated in N2/N1), 1,776 cards with ease<2.0. The user's real weak zone is
-  N2–N1 vocabulary — difficulty is the driver, not training direction.
-- **Core 2000** (3,992 notes / 9,980 cards): fully mature, low difficulty; the most
-  retire-friendly deck.
-- **文法** (3,871 notes): only **428 unique expressions** (~9× duplication — each note
-  is the same expression with a different example sentence). User insight: the
-  expressions are internalized; when a grammar card lapses it's because the *example*
-  contains a hard word → **a lapsing grammar card is a vocab-card trigger, not a
-  grammar problem**. The parked N3/N2 halves (1,349 suspended-before-study cards) are
-  ignored entirely (user decision).
-- **고급 (일문따)** (3,112 notes): untouched backlog, not legacy — user quit early and
-  disliked the card format. Reference pool only; no registry entry.
-- **Coverage feasibility validated, code-only**: Janome lemma-counting over 2,125
-  example sentences already covers 59% of N4 vocabulary (33% seen ≥3 times) but only
-  16% of the weak N1/N2 words — easy words really do ride along in example sentences;
-  weak words need their own cards. No LLM anywhere in the counting path.
+**Remaining work:**
 
-**Mechanisms (build order):**
-
-1. ~~**`known_words` registry**~~ **Done (2026-07-14)** — `legacy_helper.py snapshot`
-   reads the legacy decks into the `known_words` table (kind `word`/`grammar`, per-source
-   rows, never-studied cards excluded) and mirrors the **stable fields only** (identity,
-   status, lapses) to `data/known_words/known_words.jsonl`; fast-drifting stats (ease/ivl/reps) stay
-   DB-local with Anki as their source of truth, so the JSONL rhythm is one big initial
-   commit then small status diffs. The registry rides the standard reconcile-on-change
-   (status ratchets to `retired`) and merge-then-mirror export; doctor gained the parity
-   check and `--check` now reports a `known_legacy` block. First real snapshot: 11,127
-   rows (10,704 words + 423 expressions). `weak-queue` (mechanism 3's query) also landed:
-   684 words at lapses≥4, worst first. Legacy words keep their surface form — no root_id
-   conversion; matching against root_ids runs on the derived `norm_key` (see *Identity
-   normalization* below).
-2. **Exposure counter** — at export time, lemma-count new-deck example sentences into
-   `word_exposure`; join against `known_words` for coverage reports. Reverse use:
-   generation prompts get 3–5 "weave in if natural" hint words from the weak/retiring
-   list — no extra LLM calls (examples are LLM-written anyway); example quality wins
-   over hint insertion. Caveat kept honest: exposure ≠ active recall — it justifies
-   retiring *easy* words, never weak ones.
-3. **Weak-tail promotion** — queue = lapses≥4 (user-confirmed starting bar; 684 words
-   measured), ordered by lapses desc / ease asc / exposure asc; 5–10 per session through
-   the normal card pipeline. Widen to ease<2.0 (~1,776 cards) only when the queue runs
-   dry. **Tooling done (2026-07-14)**: `weak-queue` ranks the queue and
-   `retire-promoted` closes the loop (archives the legacy notes of every word owning a
-   synced AnkiGen card, flips registry status — idempotent sweep, multi-machine-safe);
-   the ongoing promotion sessions themselves are the remaining work (the skill's
-   `legacy_migration.md` has the session recipe).
-4. **Grammar compression pass** — keep 1 note per expression (the calmest example:
-   fewest lapses, then longest interval), archive the rest. **Done (2026-07-14)** —
-   `archive-duplicates --apply` over the 文法 decks archived **2,091 cards, 423
-   survivors** (기초 169 / N3 575 / N2 425 / N1 922). Follow-up hook: lapsing
-   survivors feed the vocab queue (see the insight above).
-5. **Retirement pass** — rule-driven shrink of the healthy remainder: archive a card
+1. **Promotion sessions (ongoing)** — queue = lapses≥4 (user-confirmed starting bar;
+   684 words at first snapshot), ordered by lapses desc / ease asc; 5–10 per session
+   through the normal card pipeline, closed by `retire-promoted` (+ `retire-word` for
+   the `needs_review` reading-only matches). Widen to ease<2.0 (~1,776 cards) only
+   when the queue runs dry.
+2. **Exposure counter** — **v1 shipped 2026-07-15** (mechanism, tier design, and the
+   first live numbers: `docs/history.md`; current behavior: `docs/architecture.md`):
+   `card_lemmas` per-card cache + `refresh_card_lemmas` lazy sweep +
+   `legacy_helper.py coverage` live-join report with exact / reading-only tiers.
+   Still open here:
+   - **Reverse use**: generation prompts get 3–5 "weave in if natural" hint words
+     from the weak/retiring list — no extra LLM calls (examples are LLM-written
+     anyway); example quality wins over hint insertion.
+   - **Exposure-aware consumption**: weak-queue ordering, retirement Wave 2 evidence.
+   - **Grammar expressions** (multi-token matching against the 423 registry rows).
+   - **Escalation valve** when a retirement decision actually hinges on reading-tier
+     exposure: judge that word once in conversation (the Level 3 lazy-canonical
+     pattern). No bulk LLM disambiguation — it breaks deterministic recompute and
+     the no-extra-LLM-calls rule (the same reasons Level 3 is deferred). Polysemy
+     stays tolerable for exposure's consumers: registry rows are word-level,
+     retirement only ever touches mature/easy words, archive is reversible, and
+     wrongly-retired words get recaptured by the flag/practice loops.
+   Caveat kept honest: exposure ≠ active recall — it justifies retiring *easy* words,
+   never weak ones.
+3. **Retirement pass** — rule-driven shrink of the healthy remainder: archive a card
    when its word is mature + low-lapse AND (easy tier OR exposure ≥ N). Wave 1 (stats
    only, no exposure needed): Core 2000 + N4-tier. Later waves widen as new-deck
-   examples accumulate coverage.
-
-**Archive semantics: suspend + tag `ankigen-retired`** — reversible, review history
-preserved, disappears from study. Bulk *deletion* is a separate later decision once
-the shrink is trusted. Archive operations are batched AnkiConnect calls; they must
-print counts and stay idempotent so an interrupted pass can simply re-run.
-
-**Generalization (2026-07-14, Phases A+B done):** the tools are fully
-collection-agnostic — nothing about the user's decks lives in code. `list-decks` /
-`inspect-deck` for discovery; `snapshot --deck ... --word-field ...` registers a
-source and stores its full spec as data (`meta.known_sources`); a no-argument
-`snapshot` refreshes every registered source, and `retire-promoted` reads the same
-specs to locate any word's legacy notes. Judgment (which deck, what the fields
-mean) stays with the agent+user; the conversation flow (list → pick → inspect →
-confirm mapping → apply) lives in the skill's `legacy_migration.md` (routed from
-SKILL.md, which stays lean). **Phase C (batch sub-agent promotion sessions) is
-deliberately deferred** until a few conversational promotion sessions settle the
-quality bar.
-
-**Identity normalization (2026-07-14, Levels 1+2 done):** the registry is mechanically
-collected, so its `word` values don't share the pipeline's id conventions (measured:
-1,818 kana-only headwords of 10,704; 130 rows with annotation noise like `すてき（な）`
-or `混む・込む`; `~`/`〜` character variants). Response in two layers, split by what
-code can actually decide:
-
-- **Level 1 — deterministic `norm_key`** (done): every row gets a derived root_id-shaped
-  key (`咎める(とがめる)`) — NFKC + wave-dash unification, first variant of
-  multi-expression fields, annotation parens stripped, bracket-furigana readings
-  collapsed. Computed at snapshot/reconcile, backfilled for NULL rows on every
-  connection, and rebuilt in full when the normalizer's rules version changes
-  (`_NORM_VERSION` stamp in meta) — never mirrored: the code is the single source of
-  truth for derived keys, and a stored copy in git would just be a second one that can
-  go stale. The raw `word` stays untouched — retiring searches Anki by the original
-  field value. All matching (`--check`'s `known_legacy`,
-  `weak-queue` exclusion, `retire-promoted`) replaced its LIKE heuristics with this key.
-- **Level 2 — tiered matching** (done): **exact** (root_id equals/extends the key) acts
-  automatically; **reading-only** (kana headword ↔ a root_id's reading part — a
-  homophone card matches identically) is never acted on: `retire-promoted` reports it
-  as `needs_review` with both meanings side by side, and the agent/user close confirmed
-  pairs with `retire-word`. Rationale: wrongly hiding a word from the weak-queue is
-  cheap, wrongly archiving legacy review history is not — so the queue excludes both
-  tiers, but retirement demands exactness or judgment.
-- **Level 3 — deferred**: record judged kana→kanji resolutions as registry data (a
-  `canonical` column) so each judgment happens once. Do it lazily through the
-  needs_review flow when repeats start to annoy — no bulk enrichment pass (Janome
-  can't resolve homophones; wrong canonicals recorded silently would be worse than
-  the current judged flow).
+   examples accumulate coverage. Bulk *deletion* stays a separate later decision once
+   the shrink is trusted. **Prerequisite shipped 2026-07-15** (record:
+   `docs/history.md`): write-once `retired_at` + `retired_reason` on `known_words`
+   (mirrored) plus the `retired-list` audit command — no separate table (identity,
+   matching, and the monotonic ratchet all live in the registry). The reason
+   distinction is what the coverage loop needs: a 'promoted' word keeps training via
+   its AnkiGen card, while a 'retirement-pass' word depends on continued exposure —
+   only the latter belongs in "is it still appearing in examples?" monitoring.
+   **Un-retire stays deliberately absent**: the forward path for a wrongly-retired
+   word is re-promotion (a new AnkiGen card), not resurrecting the legacy card — and
+   the monotonic status merge means a local un-retire wouldn't survive multi-machine
+   reconcile anyway.
+   **The registry is a source-agnostic word ledger (settled 2026-07-15)**, not a
+   legacy-import artifact: non-legacy entries ride synthetic sources on the same
+   `(kind, word, source_deck)` rows — 'manual' for judged "I simply know this"
+   declarations, 'ankigen' later if AnkiGen cards ever retire into the registry.
+   A separate word-level table was rejected: its PK would need exactly the
+   kana↔kanji identity resolution Level 3 defers, and word-level reads are a
+   GROUP BY (already the weak-queue pattern); if word-level semantics are ever
+   wanted, they arrive as a view over `canonical`, not a second table. Synthetic
+   sources accumulate forever, but at human vocabulary pace (hundreds of rows a
+   year ≈ one legacy-deck partition per decade), and sorted mirrors keep diffs
+   small regardless of file size — if one ever trends large, the scheme-migrating
+   export makes splitting just that source by year (keyed on write-once
+   `retired_at`) a one-line, lossless change later.
+4. **Deliberately deferred** — **Phase C** (batch sub-agent promotion sessions) waits
+   until a few conversational sessions settle the quality bar. **Normalization
+   Level 3** (a `canonical` column recording judged kana→kanji resolutions so each
+   judgment happens once) is done lazily through the needs_review flow when repeats
+   start to annoy — no bulk enrichment pass (Janome can't resolve homophones; wrong
+   canonicals recorded silently would be worse than the current judged flow).
 
 ---
 
@@ -312,28 +314,18 @@ In priority order:
    `sync-updates` (changed DB rows → `updateNoteFields`) and orphan cleanup
    (`deleteNotes`). **Deliberately deferred until real usage actually produces the
    "I want to fix this card" moment** — building it speculatively is over-engineering
-   for a personal tool. Note: backfill-audio (below) landed first and established the
+   for a personal tool. Note: backfill-audio (shipped 2026-07-10) established the
    `updateNoteFields` plumbing (`anki_connector.update_note_audio()`); this and leech
    rescue should generalize that helper rather than grow parallel ones.
    **Design constraint added 2026-07-10:** deletion must use tombstones (or edit the
    JSONL alongside the DB) — the multi-machine reconcile deliberately resurrects bare
    DB row deletions from the partitions, so "delete the row" alone no longer sticks.
-2. ~~**backfill-audio.**~~ **Done (2026-07-10)** — `pipeline.py backfill-audio` repairs
-   synced-but-silent notes: synthesizes, updates the note's `Audio` field via
-   `anki_note_id`, then records the file in the DB. Cards are skipped (not half-fixed)
-   while Anki is offline or without a recorded note id; pending cards are left to push
-   time, since TTS now happens at push (audio is made where it's pushed). From the same
-   session: online `run`s auto-drain the `synced_to_anki=0` backlog (`backlog_synced`),
-   and `ANKI_ENABLED=0` declares a generation-only machine.
-3. **doctor: skill-symlink check.** `.agents/skills/anki_card_generator` is gitignored
-   and forgotten after every fresh clone (it happened on 2026-07-08). doctor should
-   verify it and point at `./setup_symlinks.sh`.
-4. **Per-word yomigana cross-validation.** With bracket furigana, every `漢字[よみ]`
+2. **Per-word yomigana cross-validation.** With bracket furigana, every `漢字[よみ]`
    pair in `back_reading` can be checked against Janome individually (today only
    `root_id` is cross-checked). Wrong furigana rendered as ruby is a painful error for
    a learning tool. Must stay **warning-level** — Janome's N1/business coverage is
    incomplete and a hard error would create unwinnable retry loops.
-5. *(observation only)* **Retry-cap bypass.** The sidecar keys attempts by file path,
+3. *(observation only)* **Retry-cap bypass.** The sidecar keys attempts by file path,
    so renaming the working file after an escalate resets the counter. Post-escalate
    implies human involvement, so the real risk is low; keying by `root_id` would close
    it but feels like over-defense for now.
@@ -343,14 +335,9 @@ Smaller deferred notes from the same audit:
 - **`source` column on `cards`** (the original user input a card came from) — considered
   and deferred; revisit if "which sentence did this card come from?" starts mattering.
   Additive `ALTER TABLE` later, so nothing is lost by waiting.
-- **Surrogate card id (UUID) — considered and rejected (2026-07-14).** Identity stays
-  content-addressed on `(root_id, front)`: that is what lets two machines generate the
-  same sense without coordination and merge cleanly (a UUID would turn that into a
-  duplicate). `anki_note_id` is a foreign *handle* (assigned by Anki at push = epoch ms,
-  can change if a note is recreated), not identity. The one scenario where a surrogate
-  id helps — `front` edits breaking the key — is owned by hardening item 1, which needs
-  tombstones regardless; and a `uuid` column is an additive migration if that design
-  ever wants one. Do not re-litigate outside that context.
+- **Surrogate card id (UUID) — rejected (2026-07-14)**; rationale in `docs/history.md`
+  → *Settled decisions*. Revisit only inside hardening item 1 (front-edit tombstones),
+  where a `uuid` column remains an additive migration.
 - **Polysemy split example in SKILL.md** — deliberately omitted to keep the always-loaded
   context lean; add one only if real sessions repeatedly get sense-splitting wrong.
 - **TTS engine upgrade (deferred 2026-07-14).** edge-tts (free endpoint) rejects custom

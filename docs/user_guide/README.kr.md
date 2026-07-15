@@ -1,0 +1,103 @@
+# 사용자 가이드 (User Guide)
+
+> English version: [README.md](README.md)
+
+> 이 문서는 **사용자** 관점의 가이드입니다. 내부 구조는 `../architecture.md`, 카드 스키마는 `../schema_rules.md`를 참고해 주세요. 이 도구의 핵심은 **"단어만 입력하고, 마지막에 `data/`만 커밋하면 된다"**는 점입니다. 검증, DB 저장, TTS, Anki 푸시, 백업 미러 갱신은 모두 파이프라인 코드가 알아서 처리합니다.
+
+## 0. 전제 조건 (기기당 최초 1회)
+
+1. `./setup.sh <private-data-repo-url>` 실행 (의존성 설치, 스킬 심링크 생성, `data/` 클론, DB 초기화가 한 번에 수행됨).
+2. Anki Desktop 및 AnkiConnect 애드온(포트 8765) 실행 — 카드 생성만 이 기기에서 하고 푸시는 다른 기기에서 처리하려면 `.env` 파일에 `ANKI_ENABLED=0`을 설정합니다.
+3. 환경 점검은 `doctor` 명령어로 수행:
+   ```bash
+   uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py doctor
+   ```
+   설정이 누락되었거나 오류가 있는 경우(스킬 심링크 미연결, DB↔JSONL 불일치 등) 해결 방법까지 함께 안내해 줍니다.
+
+## 1. 일상적인 사용법: 카드 만들기
+
+이 저장소 디렉토리에서 Claude Code를 열고 **원하는 작업을 편하게 말하면 됩니다.** 스킬(`.agents/skills/anki_card_generator`)이 나머지 과정을 알아서 처리합니다.
+
+- `躊躇う 카드 만들어줘`
+- `이 문장에서 공부할 만한 단어 뽑아서 카드로: 先方の意向を踏まえ、価格改定は見送る運びとなった。`
+- `오늘 회의에서 나온 단어 몇 개 추가하고 싶어` (단어를 나열해주면 됩니다)
+
+에이전트가 중복 체크(`--check`), 일본어 예문 생성, 파이프라인 검증, 한국어 뜻 및 팁(Tip) 추가, DB 저장, TTS 합성, Anki 푸시, `data/` 미러 갱신까지 모든 단계를 자동으로 진행합니다. 사용자는 최종 결과 리포트만 확인하면 됩니다. 이미 등록된 단어라면 다른 뜻으로 추가할지 아니면 건너뛸지(Skip) 확인을 요청합니다.
+
+**작업 세션을 마칠 때는 항상 백업 커밋을 해주세요.** `data/` 디렉토리는 별도의 프라이빗 저장소(private repository)이므로 동기화 스크립트를 통해 편하게 백업을 진행할 수 있습니다. (이 작업 또한 에이전트에게 지시할 수 있습니다.)
+
+```bash
+./data/sync.sh
+```
+
+## 2. Anki가 꺼져 있는 상태에서도 작동합니다
+
+Anki가 꺼져 있어도 오류가 발생하지 않습니다. 카드는 DB에 '대기(pending)' 상태로 안전하게 저장되며, **다음에 Anki를 켠 상태로 카드를 생성할 때 대기 중이던 카드들도 함께 자동으로 푸시**됩니다. 새 카드 생성 세션을 시작하지 않고 대기 중인 카드를 즉시 동기화하고 싶을 때만 아래 명령어를 수동으로 실행합니다:
+
+```bash
+uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending
+```
+
+`ANKI_ENABLED=0` 기기(생성 전용)에서는 `data/` 디렉토리를 커밋하고 푸시하는 것으로 작업이 마무리됩니다. 이후 Anki가 연동된 기기에서 `git pull`을 받으면 해당 기기에서 푸시가 처리됩니다.
+
+## 3. 백업 및 멀티 기기(Multi-device) 환경
+
+- **백업 = `data/` 디렉토리 안에서 커밋 및 푸시.** 코드 저장소에는 카드 데이터가 포함되지 않습니다 (`.gitignore`로 차단됨).
+- **다른 기기에서 사용할 때**: 코드 저장소와 `data/` 저장소를 각각 `pull`합니다. DB는 다음 실행 시 자동으로 재구성 및 병합되므로 별도의 복원 명령어는 필요하지 않습니다. Anki 컬렉션 데이터 자체는 AnkiWeb을 통해 동기화됩니다.
+- **주의할 규칙**: 새로운 기기에서 Anki를 설정하는 경우, **첫 동기화(푸시)를 실행하기 전에 AnkiWeb 동기화를 먼저 완료**해야 합니다. (동기화되지 않은 상태에서 양쪽 기기에서 노트 모델이 개별 생성되면, 전체 데이터 업로드 또는 다운로드가 강제될 수 있습니다. 자세한 내용은 `../architecture.md`의 *Multiple Machines* 부분을 참고하세요.)
+
+## 4. 레거시 덱 작업 (승격 세션)
+
+기존 덱에서 학습이 부족한 단어(약한 단어)를 새 카드로 승격시키는 작업 역시 에이전트에게 자연어로 지시할 수 있으며, 이 경우 플레이북(`legacy_migration.md`)에 따라 작업이 진행됩니다:
+
+- `"승격 세션 하자" / "레거시에서 가장 약한 단어 10개 보여줘"`라고 요청합니다.
+  → weak-queue에서 단어를 선택하고 → 평소와 같이 카드를 생성한 다음 → `retire-promoted` 명령어로 이전 카드를 보류(suspend) 처리합니다. (기록이 삭제되지 않으며 언제든지 복구 가능합니다.) → `needs_review` 상태가 발생하면 동음이의어 여부만 함께 판단합니다.
+- `"○○ 덱을 known-words registry에 등록하고 싶어"`라고 요청하면 에이전트가 기존 덱 구조를 파악하고 필드 매핑을 제안합니다. 이를 검토한 후 승인하면 스냅샷(snapshot)으로 등록됩니다.
+- 검토/조회용: `"지금까지 retire된 단어 보여줘" / "커버리지 리포트 생성해줘"` 등도 가능합니다.
+
+레거시 작업 후에도 마무리는 동일하게 `data/` 커밋 및 푸시를 진행합니다.
+
+## 5. 명령어 치트시트(Cheatsheet)
+
+자주 쓰는 명령어의 경로가 길기 때문에 셸 설정 파일(`~/.zshrc` 등)에 단축어(alias)를 등록하여 사용하는 것을 권장합니다:
+
+```bash
+alias akg-pipe='uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py'
+alias akg-db='uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py'
+alias akg-legacy='uv run python src/anki_generator/skills/anki_card_generator/scripts/legacy_helper.py'
+```
+
+| 명령어 | 용도 / 실행 시점 |
+|---|---|
+| `akg-pipe doctor` | 시스템 상태가 비정상적일 때 가장 먼저 실행. 환경 설정, DB, 미러링 상태, Anki 연동을 일괄 점검 |
+| `akg-pipe sync-pending` | Anki가 꺼진 상태에서 생성되어 대기 중인 카드를 즉시 Anki로 동기화(푸시) |
+| `akg-pipe backfill-audio` | 네트워크 오류 등으로 TTS 오디오 없이 생성된 카드의 음성 데이터 복구 |
+| `akg-pipe sync-decks` | 듣기(Listening) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
+| `akg-pipe gc-media` | 어떤 카드로도 참조되지 않고 유실된 미디어 파일(mp3)을 일괄 정리 (주기적으로 가끔 실행) |
+| `akg-db --check "単語"` | 특정 단어의 기존 카드 존재 여부 및 레거시 덱 등록 여부 확인 |
+| `akg-db --pending` | 아직 Anki 앱으로 푸시되지 않고 대기 중인 카드 목록 조회 |
+| `akg-db --export` / `--import` | SQLite DB와 JSONL 미러 파일 간의 수동 동기화 (`doctor` 명령어가 동기화 방향을 알려줍니다) |
+| `akg-legacy weak-queue --limit 10` | 레거시 덱에서 승격 대상인 후보 단어 조회 (망각 횟수인 lapses가 많은 순) |
+| `akg-legacy retire-promoted` | 승격 완료된 단어에 해당하는 레거시 덱의 카드를 일괄 보류(suspend) 처리 |
+| `akg-legacy retire-word "単語"` | "이미 충분히 알고 있는 단어"로 지정하여 수동으로 학습 대상에서 제외(retire) |
+| `akg-legacy retired-list` / `coverage` | 학습 제외(retire) 이력 조회 / 예문 노출 커버리지 리포트 출력 (Anki 앱 실행 불필요) |
+
+`run`, `snapshot`, `archive-duplicates` 등의 기타 명령어들은 에이전트가 대화 중에 상황에 맞춰 내부적으로 실행하므로, 사용자가 직접 입력할 일은 거의 없습니다.
+
+## 6. 증상별 문제 해결 가이드
+
+| 발생한 문제 (증상) | 해결 방법 (처방) |
+|---|---|
+| 원인을 알 수 없는 문제가 발생함 | 우선 `doctor` 명령어를 실행합니다. 대부분의 경우 해결 방향이나 필요한 후속 명령어를 안내해 줍니다. |
+| 저장소를 새로 클론(clone)한 후 에이전트가 스킬을 인식하지 못함 | `./setup_symlinks.sh` 명령어를 실행합니다. (스킬 심링크 파일은 `.gitignore`에 등록되어 있어 저장소를 새로 클론할 때 자동으로 포함되지 않기 때문입니다.) |
+| 생성된 카드에 음성(오디오)이 나오지 않음 | `backfill-audio` 명령어를 실행하여 복구합니다. (인터넷 연결이 필요합니다.) |
+| 듣기(Listening) 카드가 잘못하여 단어(Vocab) 덱에 보임 | `sync-decks` 명령어를 실행하여 카드 유형에 맞게 덱 배치를 다시 정렬합니다. |
+| 로컬 DB에서 수동으로 삭제한 카드가 다시 복구됨 | 정상적인 동작입니다. Git에 관리되는 JSONL 미러 파일이 원본 소스 역할을 하므로 다시 불러오게 됩니다. 영구 삭제(tombstone 기능)는 로드맵을 참고하세요. |
+| 다른 기기에서 이미 푸시한 카드가 이 기기에서 중복 푸시될까 염려됨 | 중복 푸시되지 않습니다. 동기화 상태 역시 Git을 통해 기록이 전파되고 안전하게 병합(monotonic merge)되며, Anki 자체의 중복 감지 알고리즘이 이중으로 보호합니다. |
+| 카드의 디자인(스타일/레이아웃)을 수정하고 싶음 | `anki_model/` 폴더의 CSS 및 HTML 파일을 직접 수정합니다. 수정 사항은 다음 동기화 시점에 Anki 앱에 자동으로 반영됩니다. **Anki 앱 내에서 직접 템플릿을 수정하지 마세요.** (다음 동기화 시 저장소의 파일 내용으로 덮어써집니다.) |
+
+## 7. 주의 사항 (금지 행동)
+
+- **카드 데이터를 메인 코드 저장소에 커밋하는 행위**: `.gitignore` 파일이 차단하고 있으나, 카드가 저장되는 `data/` 폴더의 변경 사항은 항상 **해당 `data/` 디렉토리 안에서** 커밋 및 푸시해야 함을 유의해 주세요.
+- **Anki 앱 내부에서 노트 모델이나 템플릿을 직접 수정하는 행위**: 저장소 내의 코드 파일이 기준(Source of Truth)입니다. 디자인 및 템플릿 수정은 반드시 `anki_model/` 디렉토리의 파일들을 통해서만 수행해 주세요.
+- **`cards/pending/` 폴더 내의 제어 필드(`status` 등)나 `.attempts.json` 파일을 수동으로 편집하는 행위**: 파이프라인의 상태를 추적하는 내부 데이터입니다. 이 디렉토리는 기본적으로 에이전트 전용 작업 공간이므로 임의로 수정하면 동기화 오류가 발생할 수 있습니다.
