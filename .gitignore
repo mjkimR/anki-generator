@@ -16,7 +16,11 @@ __pycache__/
 media/
 cards/
 temp_card.json
+
+# Card data never lives in the code repo — JSONL mirrors belong to the private
+# data repository cloned at data/ (see setup.sh)
 data/
+*.jsonl
 
 # Local environment configs
 .env

@@ -1,6 +1,0 @@
-# Two machines appending cards to the same monthly partition is an add/add conflict —
-# union-merge keeps both line sets instead of stopping the pull. Any duplicate or
-# misordered lines are harmless: the next pipeline run reconciles them into the DB
-# (upsert on (root_id, front)) and re-exports a clean, deterministically sorted file.
-data/cards/*.jsonl merge=union
-data/known_words/*.jsonl merge=union

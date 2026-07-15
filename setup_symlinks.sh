@@ -12,7 +12,9 @@ mkdir -p .agents/skills
 
 # Create the symbolic link
 echo "[2/2] Generating symlink for anki_card_generator..."
-ln -sf ../../src/anki_generator/skills/anki_card_generator .agents/skills/anki_card_generator
+# -n: an existing symlink is replaced, not descended into — re-running would otherwise
+# plant a self-referencing link inside the skill directory itself.
+ln -sfn ../../src/anki_generator/skills/anki_card_generator .agents/skills/anki_card_generator
 
 # Verify that the symlink was successfully created
 if [ -L ".agents/skills/anki_card_generator" ]; then
