@@ -13,6 +13,17 @@ Response contract (stdout, JSON):
 """
 
 import sys
+from typing import cast
+from anki_generator.skills.anki_card_generator.scripts.schemas import (
+    CmdRunResponse,
+    CmdSyncPendingResponse,
+    CmdSyncDecksResponse,
+    CmdBackfillResponse,
+    CmdDoctorResponse,
+    CmdGcMediaResponse,
+    DbInsertResult,
+    BackupResult,
+)
 import json
 import argparse
 from pathlib import Path
@@ -24,10 +35,12 @@ sys.path.append(str(src_dir))
 
 from anki_generator.config import (  # noqa: E402
     ANKI_DEFAULT_DECK,
+    ANKI_LISTENING_DECK,
     ANKI_ENABLED,
     ANKI_NOTE_MODEL,
     MEDIA_DIR,
     CARDS_PENDING_DIR,
+    PROJECT_ROOT,
 )
 from anki_generator.skills.anki_card_generator.scripts import (  # noqa: E402
     anki_connector,
@@ -37,6 +50,10 @@ from anki_generator.skills.anki_card_generator.scripts import (  # noqa: E402
 )
 
 MAX_ATTEMPTS = 3
+
+# The skill directory this script belongs to — the expected target of the gitignored
+# .agents/skills symlink that doctor verifies.
+SKILL_DIR = current_file.parents[1]
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -149,7 +166,17 @@ def connect_anki(deck_name):
     except Exception as e:
         return False, None, str(e)
 
-def cmd_run(file_path, deck_name, db_path=None):
+def _route_listening(source_deck):
+    """Sweep the audio-first Listening cards out of the vocab deck into
+    ANKI_LISTENING_DECK. Soft by design: a routing failure never fails the push — the
+    cards are already in Anki (just the vocab deck), and the next push, sync-pending, or
+    'sync-decks' will move them. Returns (moved_count, error_or_None)."""
+    try:
+        return anki_connector.route_listening_cards(source_deck, ANKI_LISTENING_DECK), None
+    except Exception as e:
+        return 0, str(e)
+
+def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
     path = Path(file_path)
     if not path.exists():
         return {"status": "error", "message": f"File not found: {file_path}"}, 1
@@ -196,7 +223,7 @@ def cmd_run(file_path, deck_name, db_path=None):
         for c in cards:
             c["status"] = "validated"
         save_json(path, data)
-        result = {
+        result: CmdRunResponse = {
             "status": "need_korean",
             "cards_missing_korean": needs_korean,
             "message": ("Japanese fields are validated and FROZEN. Fill 'back_meaning' "
@@ -204,9 +231,10 @@ def cmd_run(file_path, deck_name, db_path=None):
                         "for the listed cards — do NOT modify any Japanese field — then run "
                         "this command again."),
         }
-        if vres.get("warnings"):
-            result["warnings"] = vres["warnings"]
-        return result, 0
+        warnings = vres.get("warnings")
+        if warnings:
+            result["warnings"] = warnings
+        return cast(CmdRunResponse, result), 0
 
     # Stage 3 — persist to the DB FIRST (synced_to_anki=0). If anything fails after this,
     # the cards are recoverable via 'sync-pending'; Anki never holds cards the DB doesn't.
@@ -214,7 +242,7 @@ def cmd_run(file_path, deck_name, db_path=None):
     # generation on an Anki-less machine must not produce mp3s that never travel.
     for card in cards:
         card["status"] = "ready"
-    db_result = db_helper.insert_card_records(cards, db_path=db_path)
+    db_result = cast(DbInsertResult, db_helper.insert_card_records(cards, db_path=db_path))
     for card in cards:
         card["status"] = "persisted"
     save_json(path, data)
@@ -273,13 +301,20 @@ def cmd_run(file_path, deck_name, db_path=None):
             except Exception as e:
                 backlog_errors.append({"root_id": pcard.get("root_id"), "error": str(e)})
 
+    # Anki spawns a Listening card alongside each audio-carrying vocab card; route those
+    # into their own deck. Code-owned (AnkiConnect has no per-template Deck Override) and
+    # soft — the cards are already safely in Anki.
+    routed_listening, routing_error = (0, None)
+    if anki_online:
+        routed_listening, routing_error = _route_listening(deck_name)
+
     # Stage 5 — archive the working file; the DB is the source of truth now.
     archived_to = None
     if db_result.get("success") and not db_result.get("skipped"):
         archived_to = archive_file(path)
 
     # Stage 6 — refresh the git-tracked JSONL backup.
-    backup = export_backup(db_path=db_path)
+    backup = cast(BackupResult, export_backup(db_path=db_path))
 
     result = {
         "status": "partial" if push_errors else "done",
@@ -317,19 +352,28 @@ def cmd_run(file_path, deck_name, db_path=None):
         result["backlog_errors"] = backlog_errors
         result["message"] += (f" {len(backlog_errors)} backlog card(s) still failed to "
                               "push; they stay recoverable via 'pipeline.py sync-pending'.")
+    if routed_listening:
+        result["routed_listening"] = routed_listening
+        result["message"] += (f" Routed {routed_listening} listening card(s) → "
+                              f"{ANKI_LISTENING_DECK}.")
+    if routing_error:
+        result["routing_warning"] = routing_error
+        result["message"] += (" Listening-card deck routing hit an error (cards are in "
+                              "Anki, just the vocab deck) — rerun 'pipeline.py sync-decks'.")
     if backup.get("written") or backup.get("removed"):
         result["message"] += " The data/ backup was refreshed — remind the user to commit it."
     if tts_warnings:
         result["tts_warnings"] = tts_warnings
         result["message"] += (" Some cards lack audio — recover later via "
                               "'pipeline.py backfill-audio'.")
-    if vres.get("warnings"):
-        result["warnings"] = vres["warnings"]
+    warnings = vres.get("warnings")
+    if warnings:
+        result["warnings"] = warnings
     if archived_to:
         result["archived_to"] = archived_to
-    return result, (1 if push_errors else 0)
+    return cast(CmdRunResponse, result), (1 if push_errors else 0)
 
-def cmd_sync_pending(deck_name, db_path=None):
+def cmd_sync_pending(deck_name, db_path=None) -> tuple[CmdSyncPendingResponse, int]:
     if not ANKI_ENABLED:
         return {"status": "error",
                 "message": ("This machine is generation-only (ANKI_ENABLED=0) — run "
@@ -361,6 +405,10 @@ def cmd_sync_pending(deck_name, db_path=None):
         except Exception as e:
             errors.append({"root_id": card.get("root_id"), "error": str(e)})
 
+    # Anki is online here (we returned early otherwise) — route the Listening cards the
+    # pushes just spawned, which also drains any pre-existing routing backlog.
+    routed_listening, routing_error = _route_listening(deck_name)
+
     result = {
         "status": "partial" if errors else "done",
         "synced_count": synced_count,
@@ -369,15 +417,42 @@ def cmd_sync_pending(deck_name, db_path=None):
         # sync flags flipped in the DB — refresh the JSONL backup to match.
         "backup": export_backup(db_path=db_path),
     }
+    if routed_listening:
+        result["routed_listening"] = routed_listening
+    if routing_error:
+        result["routing_warning"] = routing_error
     if tts_warnings:
         result["tts_warnings"] = tts_warnings
         result["message"] = ("Some cards synced without audio — recover via "
                              "'pipeline.py backfill-audio'.")
     if errors:
         result["errors"] = errors
-    return result, (1 if errors else 0)
+    return cast(CmdSyncPendingResponse, result), (1 if errors else 0)
 
-def cmd_backfill_audio(db_path=None):
+def cmd_sync_decks(deck_name, db_path=None) -> tuple[CmdSyncDecksResponse, int]:
+    """Move Listening cards out of the vocab deck into ANKI_LISTENING_DECK. Standalone
+    entry point: it drains the one-time backlog after the template is first added (via
+    connect_anki → ensure_note_model, which also ADDS the template if Anki lacks it) and
+    lets the routing be re-run by hand. Pure Anki-side card movement — no DB involvement."""
+    if not ANKI_ENABLED:
+        return {"status": "error",
+                "message": ("This machine is generation-only (ANKI_ENABLED=0) — run "
+                            "sync-decks on an Anki-equipped machine instead.")}, 1
+    anki_online, _model, anki_error = connect_anki(deck_name)
+    if not anki_online:
+        return {"status": "error",
+                "message": f"Anki is not reachable ({anki_error}). Open Anki and retry."}, 1
+    moved, err = _route_listening(deck_name)
+    if err:
+        return {"status": "error",
+                "message": f"Listening-card routing failed: {err}"}, 1
+    return {"status": "done", "routed_listening": moved,
+            "source_deck": deck_name, "listening_deck": ANKI_LISTENING_DECK,
+            "message": (f"Routed {moved} listening card(s) → {ANKI_LISTENING_DECK}."
+                        if moved else
+                        f"No listening cards to route into {ANKI_LISTENING_DECK}.")}, 0
+
+def cmd_backfill_audio(db_path=None) -> tuple[CmdBackfillResponse, int]:
     """Repairs synced-but-silent notes: a TTS failure at push time leaves the note in
     Anki without audio and the DB row with an empty audio_path. Synthesizes the missing
     audio, updates the note's Audio field in place via the stored anki_note_id, then
@@ -445,9 +520,9 @@ def cmd_backfill_audio(db_path=None):
         result["skipped"] = skipped
     if errors:
         result["errors"] = errors
-    return result, (1 if errors else 0)
+    return cast(CmdBackfillResponse, result), (1 if errors else 0)
 
-def cmd_doctor(db_path=None):
+def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
     """Environment health check — lets the agent fail fast at step 0 instead of
     mid-pipeline. AnkiConnect being offline is a warning, not a failure."""
     checks = []
@@ -493,6 +568,24 @@ def cmd_doctor(db_path=None):
     except Exception as e:
         add("media_dir", False, str(e))
 
+    # The agent-skill symlink is gitignored, so every fresh clone forgets it — the
+    # pipeline runs fine without it, but the agent silently loses the skill.
+    try:
+        link = PROJECT_ROOT / ".agents" / "skills" / "anki_card_generator"
+        if link.exists() and link.resolve() == SKILL_DIR:
+            add("skill_symlink", True, str(link))
+        else:
+            if link.is_symlink():
+                state = "broken" if not link.exists() else f"pointing at {link.resolve()}"
+            elif link.exists():
+                state = "not a symlink to the repo skill"
+            else:
+                state = "missing"
+            add("skill_symlink", False,
+                f"{link} is {state} — run ./setup_symlinks.sh (or ./setup.sh)")
+    except Exception as e:
+        add("skill_symlink", False, str(e))
+
     try:
         conn = db_helper.get_connection(db_path)
         db_count = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
@@ -524,7 +617,7 @@ def cmd_doctor(db_path=None):
                 add("known_words", True, f"{known_count} known words ↔ {known_lines} JSONL lines")
             else:
                 add("known_words", False,
-                    f"DB has {known_count} known words but known_words.jsonl holds "
+                    f"DB has {known_count} known words but the known-words mirror holds "
                     f"{known_lines} lines — run db_helper.py --export and commit data/")
     except Exception as e:
         add("known_words", False, str(e))
@@ -572,10 +665,11 @@ def cmd_doctor(db_path=None):
 
     return _doctor_result(checks)
 
-def _doctor_result(checks):
-    # Anki being offline, backup drift, and note drift are recoverable states,
-    # not env failures.
-    WARN_ONLY = {"anki_connect", "data_backup", "anki_notes", "known_words"}
+def _doctor_result(checks) -> tuple[CmdDoctorResponse, int]:
+    # Anki being offline, backup drift, note drift, and a missing skill symlink are
+    # recoverable states, not env failures.
+    WARN_ONLY = {"anki_connect", "data_backup", "anki_notes", "known_words",
+                 "skill_symlink"}
     core_ok = all(c["ok"] for c in checks if c["check"] not in WARN_ONLY)
     warnings = [c["check"] for c in checks if c["check"] in WARN_ONLY and not c["ok"]]
     result = {"status": "ok" if core_ok else "error", "checks": checks}
@@ -589,16 +683,24 @@ def _doctor_result(checks):
             notes.append("Known-words registry and its JSONL mirror are out of sync — see the known_words check detail.")
         if "anki_notes" in warnings:
             notes.append("Some synced cards are missing from this Anki collection — see the anki_notes check detail.")
+        if "skill_symlink" in warnings:
+            notes.append("The agent-skill symlink is not set up — run ./setup_symlinks.sh.")
         result["message"] = "Core environment is healthy. " + " ".join(notes)
-    return result, (0 if core_ok else 1)
+    return cast(CmdDoctorResponse, result), (0 if core_ok else 1)
 
-def _extract_audio_paths(data):
+def _extract_audio_paths(data) -> set[str]:
     cards = data.get("cards", []) if isinstance(data, dict) else data
     if not isinstance(cards, list):
         cards = [cards]
-    return {c.get("audio_path") for c in cards if isinstance(c, dict) and c.get("audio_path")}
+    res: set[str] = set()
+    for c in cards:
+        if isinstance(c, dict):
+            ap = c.get("audio_path")
+            if ap and isinstance(ap, str):
+                res.add(ap)
+    return res
 
-def cmd_gc_media(db_path=None):
+def cmd_gc_media(db_path=None) -> tuple[CmdGcMediaResponse, int]:
     """Deletes media files referenced by neither the DB nor any pending working file.
     Comparison is by bare file name: the DB stores names (legacy rows may hold absolute
     paths), and the hash-based naming makes name collisions impossible."""
@@ -640,6 +742,12 @@ def main():
     p_sync.add_argument("--deck", type=str, default=ANKI_DEFAULT_DECK)
     p_sync.add_argument("--db", type=str, default=None, help=argparse.SUPPRESS)
 
+    p_decks = sub.add_parser("sync-decks",
+                             help="Route Listening cards from the vocab deck into the listening deck")
+    p_decks.add_argument("--deck", type=str, default=ANKI_DEFAULT_DECK,
+                         help="Source deck the listening cards are swept out of")
+    p_decks.add_argument("--db", type=str, default=None, help=argparse.SUPPRESS)
+
     p_bf = sub.add_parser("backfill-audio",
                           help="Synthesize missing audio and update the DB + Anki notes")
     p_bf.add_argument("--db", type=str, default=None, help=argparse.SUPPRESS)
@@ -656,6 +764,8 @@ def main():
         result, code = cmd_run(args.file, args.deck, db_path=args.db)
     elif args.command == "sync-pending":
         result, code = cmd_sync_pending(args.deck, db_path=args.db)
+    elif args.command == "sync-decks":
+        result, code = cmd_sync_decks(args.deck, db_path=args.db)
     elif args.command == "backfill-audio":
         result, code = cmd_backfill_audio(db_path=args.db)
     elif args.command == "doctor":

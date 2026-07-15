@@ -1,0 +1,8 @@
+<!-- Listening template — audio-first. The whole front is wrapped in {{#Audio}}…{{/Audio}}
+     so a note with an empty Audio field renders an empty front, and Anki then generates
+     NO listening card for it. That conditional IS the "silent cards grow no listening
+     card" gate — keep every visible element inside it. -->
+{{#Audio}}
+<div class="listen-prompt">🔊 音だけで思い出す</div>
+{{Audio}}
+{{/Audio}}

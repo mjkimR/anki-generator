@@ -1,3 +1,4 @@
+# pyright: reportTypedDictNotRequiredAccess=false
 import sys
 import json
 from pathlib import Path
@@ -267,7 +268,7 @@ def test_backfill_audio_leaves_pending_cards_to_push_time(tmp_path, monkeypatch)
     ], db_path=db)
 
     result, code = pipeline.cmd_backfill_audio(db_path=db)
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     assert result["backfilled"] == 0 and result["notes_updated"] == 0
     reasons = {c["root_id"]: c["reason"] for c in result["skipped"]}
     assert "push time" in reasons["決断(けつだん)"]
@@ -287,7 +288,7 @@ def test_backfill_audio_skips_synced_without_note_id(tmp_path, monkeypatch):
         back_meaning="타협", synced_to_anki=1)], db_path=db)
 
     result, code = pipeline.cmd_backfill_audio(db_path=db)
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     assert result["backfilled"] == 0
     assert "note id" in result["skipped"][0]["reason"]
 
@@ -326,7 +327,7 @@ def test_sync_pending_resynthesizes_missing_audio(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
     result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     assert result["synced_count"] == 1
     assert "tts_warnings" not in result
     assert captured["fields"]["Audio"] == "[sound:tts_missing.mp3]"
@@ -345,7 +346,7 @@ def test_sync_pending_clears_audio_when_resynthesis_fails(tmp_path, monkeypatch)
     fake_anki_online(monkeypatch)
 
     result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     assert result["synced_count"] == 1  # pushed silent rather than stuck
     assert result["tts_warnings"][0]["root_id"] == "妥協(だきょう)"
     # audio_path is cleared, so the card is visible to backfill-audio later.
@@ -451,7 +452,7 @@ def test_gc_media_removes_only_unreferenced(tmp_path, monkeypatch):
         [make_japanese_card(back_meaning="타협", audio_path=str(referenced))], db_path=db)
 
     result, code = pipeline.cmd_gc_media(db_path=db)
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     assert result["removed"] == ["tts_orphan.mp3"]
     assert referenced.exists() and not orphaned.exists()
 
@@ -463,3 +464,27 @@ def test_doctor_core_ok_with_anki_offline(tmp_path, monkeypatch):
     assert result["status"] == "ok"
     anki = next(c for c in result["checks"] if c["check"] == "anki_connect")
     assert anki["ok"] is False  # offline is a warning, not a failure
+
+def test_doctor_flags_missing_skill_symlink(tmp_path, monkeypatch):
+    # A fresh clone: the gitignored .agents/skills symlink doesn't exist yet.
+    patch_backup(monkeypatch, tmp_path)
+    fake_anki_offline(monkeypatch)
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+    assert code == 0 and result["status"] == "ok"  # setup gap is warn-only
+    check = next(c for c in result["checks"] if c["check"] == "skill_symlink")
+    assert check["ok"] is False
+    assert "missing" in check["detail"] and "setup_symlinks.sh" in check["detail"]
+
+def test_doctor_accepts_valid_skill_symlink(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)
+    fake_anki_offline(monkeypatch)
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    link_dir = tmp_path / ".agents" / "skills"
+    link_dir.mkdir(parents=True)
+    (link_dir / "anki_card_generator").symlink_to(pipeline.SKILL_DIR)
+
+    result, _ = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+    check = next(c for c in result["checks"] if c["check"] == "skill_symlink")
+    assert check["ok"] is True

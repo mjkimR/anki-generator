@@ -47,3 +47,10 @@ ruby rt {
 .tip .label {
   background: #7a7a7a;
 }
+
+/* Listening template: audio-first front. Small muted prompt above the play button. */
+.listen-prompt {
+  font-size: 0.7em;
+  color: #8a8a8a;
+  margin-bottom: 0.5em;
+}
