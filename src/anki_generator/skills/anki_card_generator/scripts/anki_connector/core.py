@@ -3,21 +3,18 @@ import os
 import re
 import json
 import base64
-import argparse
 import requests
 from pathlib import Path
 
-# Automatically add the src/ directory to the system path
-current_file = Path(__file__).resolve()
-src_dir = current_file.parents[4]
-sys.path.append(str(src_dir))
+from anki_generator.config import ANKI_CONNECT_URL, ANKI_NOTE_MODEL
 
-from anki_generator.config import ANKI_CONNECT_URL, ANKI_DEFAULT_DECK, ANKI_NOTE_MODEL  # noqa: E402
+current_file = Path(__file__).resolve()
 
 # The note model is code: field layout below, templates/CSS in the git-managed files
 # under anki_model/. ensure_note_model() creates the model in Anki and keeps it in
 # sync, so the repo — not the Anki profile — owns the card look.
-MODEL_DIR = current_file.parent.parent / "anki_model"
+MODEL_DIR = current_file.parent.parent.parent / "anki_model"
+
 # Front must stay first — it is Anki's duplicate-detection key. RootId is not rendered
 # by any template; it exists so Anki-side features (leech rescue, flag harvest) can
 # identify the word without depending on the note-id ↔ DB join.
@@ -293,18 +290,3 @@ def push_to_anki(card_json_path, deck_name):
     if card_errors:
         result["errors"] = card_errors
     return result
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Anki Generator Anki Connector CLI")
-    parser.add_argument("file", type=str, help="Path to JSON file containing cards to export")
-    parser.add_argument("--deck", type=str, default=ANKI_DEFAULT_DECK, help="Anki deck name to insert cards into")
-    
-    args = parser.parse_args()
-    
-    result = push_to_anki(args.file, args.deck)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    
-    # Exit cleanly even if connection warnings occur, enabling fallback routines to continue
-    if result.get("warning"):
-        sys.exit(0)
-    sys.exit(0 if result["success"] else 1)

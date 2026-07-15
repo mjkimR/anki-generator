@@ -1,11 +1,8 @@
-import sys
 import os
 import re
 import html
-import json
 import asyncio
 import hashlib
-import argparse
 from pathlib import Path
 
 # Edge TTS Import
@@ -14,12 +11,7 @@ try:
 except ImportError:
     edge_tts = None
 
-# Automatically add the src/ directory to the system path
-current_file = Path(__file__).resolve()
-src_dir = current_file.parents[4]
-sys.path.append(str(src_dir))
-
-from anki_generator.config import MEDIA_DIR, TTS_DEFAULT_VOICE  # noqa: E402
+from anki_generator.config import MEDIA_DIR, TTS_DEFAULT_VOICE
 
 def reading_to_kana(back_reading):
     """Turns the validated bracket-furigana sentence into the exact text TTS should
@@ -104,16 +96,3 @@ def synthesize(text, output_path=None, voice=None):
         }
 
     return asyncio.run(generate_speech(text, output_path, voice))
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Anki Generator TTS Helper CLI")
-    parser.add_argument("--text", type=str, required=True, help="Japanese text to convert to speech")
-    parser.add_argument("--output", type=str, help="Output mp3 file path")
-    parser.add_argument("--voice", type=str, default=TTS_DEFAULT_VOICE, help="Neural voice name")
-
-    args = parser.parse_args()
-
-    result = synthesize(args.text, args.output, args.voice)
-    print(json.dumps(result, ensure_ascii=False))
-
-    sys.exit(0 if result["success"] else 1)

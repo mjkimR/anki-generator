@@ -1,10 +1,8 @@
 import os
-from anki_generator.skills.anki_card_generator.scripts.schemas import ValidationResult
-import sys
 import re
 import json
-import argparse
-from pathlib import Path
+
+from anki_generator.skills.anki_card_generator.scripts.schemas import ValidationResult
 
 # Janome Import (Works inside the virtual environment)
 try:
@@ -88,11 +86,6 @@ def normalize_card(card):
                 card[field] = fixed
                 log.append(f"{field}: " + ", ".join(f"{o}→{n}" for o, n in changes))
     return log
-
-# Automatically add the src/ directory to the system path
-current_file = Path(__file__).resolve()
-src_dir = current_file.parents[4]
-sys.path.append(str(src_dir))
 
 # Enum Definitions (These must match the Korean POS strings expected in card creation)
 VALID_MAIN_POS = {'명사', '동사', 'い형용사', 'な형용사', '부사', '접속사', '연체사', '관용구'}
@@ -376,16 +369,3 @@ def validate_card_json(json_file_path, auto_fix=False) -> ValidationResult:
             
     except Exception as e:
         return {"valid": False, "errors": [f"Exception raised during JSON validation: {str(e)}"]}
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Anki Generator Validator CLI")
-    parser.add_argument("file", type=str, help="Path to JSON file containing cards to validate")
-    parser.add_argument("--fix", action="store_true",
-                        help="Auto-normalize old-form/Korean-style hanja to shinjitai (writes the file back) before validating.")
-
-    args = parser.parse_args()
-
-    result = validate_card_json(args.file, auto_fix=args.fix)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    
-    sys.exit(0 if result["valid"] else 1)

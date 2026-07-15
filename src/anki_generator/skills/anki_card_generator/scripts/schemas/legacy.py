@@ -1,130 +1,5 @@
-from typing import TypedDict, Any, Literal, NotRequired
-
-# --- Validation Schemas ---
-
-class ValidationError(TypedDict):
-    card_index: int
-    root_id: str | None
-    errors: list[str]
-
-class ValidationWarning(TypedDict):
-    card_index: int
-    root_id: str | None
-    warnings: list[str]
-
-class NormalizationLog(TypedDict):
-    card_index: int
-    root_id: str | None
-    field: str
-    original: str
-    fixed: str
-
-class ValidationResult(TypedDict):
-    valid: bool
-    errors: NotRequired[list[ValidationError] | list[str]]
-    warnings: NotRequired[list[ValidationWarning]]
-    normalized: NotRequired[list[NormalizationLog]]
-
-
-# --- Sub-structures ---
-
-class DbInsertResult(TypedDict, total=False):
-    success: bool
-    count: int
-    skipped: list[dict[str, Any]]
-    error: str
-
-class BackupResult(TypedDict, total=False):
-    success: bool
-    total_cards: int
-    known_words: int
-    written: list[str]
-    unchanged: list[str]
-    removed: list[str]
-    data_dir: str
-    skipped: bool
-    reason: str
-
-class DoctorCheckResult(TypedDict, total=False):
-    check: str
-    ok: bool
-    detail: str
-
-
-# --- Pipeline Command Responses ---
-
-class CmdRunResponse(TypedDict, total=False):
-    status: Literal["done", "partial", "need_korean", "regenerate", "escalate", "error"]
-    persisted: DbInsertResult
-    anki_online: bool
-    synced_count: int
-    duplicate_count: int
-    backup: BackupResult
-    message: str
-    anki_error: str | None
-    errors: list[ValidationError] | list[str] | list[dict[str, Any]] | None
-    backlog_synced: int
-    backlog_errors: list[dict[str, Any]]
-    routed_listening: int
-    routing_warning: str
-    tts_warnings: list[dict[str, Any]]
-    warnings: list[ValidationWarning]
-    archived_to: str
-    attempts: int
-    attempts_remaining: int
-    normalized: list[NormalizationLog] | None
-    cards_missing_korean: list[dict[str, Any]]
-
-
-class CmdSyncPendingResponse(TypedDict, total=False):
-    status: Literal["done", "partial", "error"]
-    synced_count: int
-    duplicate_count: int
-    backup: BackupResult
-    message: str
-    errors: list[dict[str, Any]]
-    routed_listening: int
-    routing_warning: str
-    tts_warnings: list[dict[str, Any]]
-    archived_to: str
-
-
-class CmdSyncDecksResponse(TypedDict, total=False):
-    status: Literal["done", "error"]
-    routed_listening: int
-    source_deck: str
-    listening_deck: str
-    message: str
-
-
-class CmdBackfillResponse(TypedDict, total=False):
-    status: Literal["done", "partial", "error"]
-    missing_total: int
-    backfilled: int
-    notes_updated: int
-    anki_online: bool
-    backup: BackupResult
-    skipped: list[dict[str, Any]]
-    errors: list[dict[str, Any]]
-    message: str
-
-
-class CmdDoctorResponse(TypedDict, total=False):
-    status: Literal["ok", "error"]
-    checks: list[DoctorCheckResult]
-    message: str
-
-
-class CmdGcMediaResponse(TypedDict, total=False):
-    status: Literal["done", "error"]
-    removed_count: int
-    removed: list[str]
-    kept: int
-    freed_bytes: int
-    message: str
-
-
-# --- Legacy Migration Command Responses ---
+from typing import TypedDict, Any, Literal
+from .pipeline import BackupResult
 
 class LegacyDeckInfo(TypedDict, total=False):
     name: str
@@ -134,7 +9,6 @@ class CmdListDecksResponse(TypedDict, total=False):
     status: Literal["done", "error"]
     decks: list[LegacyDeckInfo]
     message: str
-
 
 class LegacyModelField(TypedDict, total=False):
     name: str
@@ -159,13 +33,11 @@ class CmdInspectDeckResponse(TypedDict, total=False):
     models: list[LegacyModelInfo]
     message: str
 
-
 class CmdSnapshotResponse(TypedDict, total=False):
     status: Literal["done", "error"]
     snapshot_rows: int
     registry_total: int
     message: str
-
 
 class LegacyWeakWord(TypedDict, total=False):
     word: str
@@ -182,7 +54,6 @@ class CmdWeakQueueResponse(TypedDict, total=False):
     returned: int
     queue: list[LegacyWeakWord]
     message: str
-
 
 class RetiredWordInfo(TypedDict, total=False):
     word: str
@@ -204,7 +75,6 @@ class CmdRetirePromotedResponse(TypedDict, total=False):
     mirror: BackupResult
     message: str
 
-
 class CmdRetireWordResponse(TypedDict, total=False):
     status: Literal["done", "error"]
     already_retired: bool
@@ -213,7 +83,6 @@ class CmdRetireWordResponse(TypedDict, total=False):
     cards_suspended: int
     mirror: BackupResult
     message: str
-
 
 class TopExposedWord(TypedDict, total=False):
     word: str
@@ -236,7 +105,6 @@ class CmdCoverageResponse(TypedDict, total=False):
     top_exposed: list[TopExposedWord]
     message: str
 
-
 class RetiredAuditInfo(TypedDict, total=False):
     word: str
     meaning: str | None
@@ -249,7 +117,6 @@ class CmdRetiredListResponse(TypedDict, total=False):
     count: int
     retired: list[RetiredAuditInfo]
     message: str
-
 
 class LegacyDeDuplicationDeckInfo(TypedDict, total=False):
     deck: str

@@ -70,11 +70,11 @@ fi
 
 # --- [5/5] Database init / restore ----------------------------------------------
 echo "[5/5] Initializing the SQLite DB (restores every card from data/ mirrors)..."
-uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --init
+uv run --package anki_generator anki-gen db init
 
 echo ""
 echo "✔ Setup complete. Remaining manual bits:"
 echo "  - Anki machine: install Anki + the AnkiConnect add-on (ID 2055492159, port 8765),"
 echo "    and sync with AnkiWeb once BEFORE the first push (see docs/architecture.md → Multiple Machines)."
 echo "  - Generation-only machine (no Anki here, ever): echo 'ANKI_ENABLED=0' >> .env"
-echo "  - Health check anytime: uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py doctor"
+echo "  - Health check anytime: uv run --package anki_generator anki-gen doctor"

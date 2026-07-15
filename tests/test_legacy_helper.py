@@ -78,7 +78,7 @@ SPEC_G = {"query": 'deck:"G"', "label": "G문법", "kind": "grammar",
 
 def patch_fake_anki(monkeypatch, tmp_path):
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_invoke)
-    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
 
 def test_snapshot_builds_registry(tmp_path, monkeypatch):
@@ -122,7 +122,7 @@ def test_snapshot_builds_registry(tmp_path, monkeypatch):
 
 def test_coverage_reports_exposure_tiers(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     seed_known(db, [
         {"word": "妥協", "reading": "だきょう", "source_deck": "JLPT N2"},  # exact hit
@@ -186,7 +186,7 @@ def test_snapshot_preserves_retired_status(tmp_path, monkeypatch):
     assert lapses == 7          # while stats still refresh from Anki
 
 def test_snapshot_declines_on_generation_only_machine(monkeypatch):
-    monkeypatch.setattr(legacy_helper, "ANKI_ENABLED", False)
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
     result, code = legacy_helper.cmd_snapshot(db_path="/nonexistent/never-touched.db")
     assert code == 1 and result["status"] == "error"
     assert "generation-only" in result["message"]
@@ -247,7 +247,7 @@ def seed_sources(db, specs):
 
 def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     seed_sources(db, [{"query": 'deck:"V"', "label": "V어휘", "kind": "word",
                        "word_fields": ["단어", "Expression"]}])
@@ -452,7 +452,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
             return [cards[cid] for cid in params["cards"]]
         raise AssertionError(f"unexpected action {action}")
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_invoke)
-    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
 
     db = str(tmp_path / "test.db")
@@ -467,7 +467,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
     row = conn.execute(
         "SELECT word, reading, meaning, source_deck, lapses, norm_key"
         " FROM known_words").fetchone()
-    stored = db_helper._get_meta(conn, "known_sources")
+    stored = db_helper.core._get_meta(conn, "known_sources")
     conn.close()
     assert row == ("跨る", "またがる", "걸치다", "N0", 2, "跨る(またがる)")
     # The FULL spec is remembered — no-arg snapshots can refresh it and
@@ -480,7 +480,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
 
 def test_retire_promoted_searches_stored_custom_sources(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
-    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     seed_known(db, [{"word": "跨る", "source_deck": "N0", "lapses": 5}])
     insert_card_records([
@@ -552,7 +552,7 @@ def test_inspect_deck_reports_models_and_fill(monkeypatch):
     assert fill == {"단어": 3, "요미가나": 3, "의미": 3}
 
 def test_archive_commands_decline_on_generation_only_machine(monkeypatch):
-    monkeypatch.setattr(legacy_helper, "ANKI_ENABLED", False)
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
     result, code = legacy_helper.cmd_retire_promoted(db_path="/nonexistent/never-touched.db")
     assert code == 1 and result["status"] == "error"
     assert "generation-only" in result["message"]

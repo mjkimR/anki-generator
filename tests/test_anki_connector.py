@@ -34,7 +34,7 @@ def test_push_card_maps_structured_fields(monkeypatch):
         captured["note"] = params.get("note")
         return 12345
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     outcome, note_id = anki_connector.push_card(make_card(), "TestDeck", "AnkiGen JA")
     assert outcome == "synced"
     assert note_id == 12345  # captured so later note updates/deletes stay possible
@@ -55,14 +55,14 @@ def test_push_card_duplicate_is_skip(monkeypatch):
     def fake_invoke(action, **params):
         raise Exception("cannot create note because it is a duplicate")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     assert anki_connector.push_card(make_card(), "TestDeck", "AnkiGen JA") == ("duplicate", None)
 
 def test_push_card_other_error_raises(monkeypatch):
     def fake_invoke(action, **params):
         raise Exception("model was not found: AnkiGen JA")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     try:
         anki_connector.push_card(make_card(), "TestDeck", "AnkiGen JA")
         assert False, "expected the error to propagate"
@@ -80,7 +80,7 @@ def test_ensure_note_model_creates_from_repo_assets(monkeypatch):
             return {}
         raise AssertionError(f"unexpected action {action}")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     name = anki_connector.ensure_note_model()
     assert name == anki_connector.ANKI_NOTE_MODEL
     assert created["inOrderFields"] == list(anki_connector.MODEL_FIELDS)
@@ -110,7 +110,7 @@ def test_ensure_note_model_syncs_drifted_styling(monkeypatch):
             return None
         raise AssertionError(f"unexpected action {action}")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     anki_connector.ensure_note_model()
     assert "updateModelStyling" in calls        # drifted css got synced
     assert "updateModelTemplates" not in calls  # templates already match
@@ -137,7 +137,7 @@ def test_ensure_note_model_adds_missing_listening_template(monkeypatch):
             return None
         raise AssertionError(f"unexpected action {action}")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     anki_connector.ensure_note_model()
     assert added == [anki_connector.LISTENING_TEMPLATE_NAME]
 
@@ -158,7 +158,7 @@ def test_route_listening_cards_moves_to_its_deck(monkeypatch):
             return None
         raise AssertionError(f"unexpected action {action}")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     moved = anki_connector.route_listening_cards("Vocab", "Listen")
     assert moved == 3
     assert calls["created"] == "Listen"
@@ -179,7 +179,7 @@ def test_route_listening_cards_noop_when_nothing_to_move(monkeypatch):
             return []
         raise AssertionError(f"unexpected action {action}")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     assert anki_connector.route_listening_cards("Vocab", "Listen") == 0
     assert "changeDeck" not in seen  # no cards → no write, stays idempotent
 
@@ -191,7 +191,7 @@ def test_ensure_note_model_refuses_foreign_field_layout(monkeypatch):
             return ["Front", "Back"]  # someone else's model under our name
         raise AssertionError(f"unexpected action {action}")
 
-    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     try:
         anki_connector.ensure_note_model()
         assert False, "expected a refusal instead of mutating a foreign model"

@@ -85,7 +85,7 @@ def test_check_word_reports_all_senses(tmp_path):
 def test_check_word_missing_db_returns_clean_result(tmp_path):
     # A fresh/absent DB must yield a clean negative result, not a raw traceback.
     result = check_word("承る", db_path=str(tmp_path / "fresh.db"))
-    assert result == {"exists": False, "count": 0, "matches": [],
+    assert result == {"success": True, "exists": False, "count": 0, "matches": [],
                       "known_legacy": {"exists": False, "matches": []}}
 
 def test_insert_skips_incomplete_cards(tmp_path):
@@ -141,7 +141,7 @@ def test_audio_path_stored_as_bare_name_and_resolved(tmp_path, monkeypatch):
     # Absolute paths go stale when the repo moves; the DB keeps the bare file name
     # and fetch_pending resolves it against the current media dir.
     media_dir = tmp_path / "media"
-    monkeypatch.setattr(db_helper, "MEDIA_DIR", media_dir)
+    monkeypatch.setattr(db_helper.core, "MEDIA_DIR", media_dir)
     db = str(tmp_path / "test.db")
     insert_card_records(
         [make_card("妥協(だきょう)", "妥協を拒んだ。",
@@ -162,8 +162,8 @@ def test_fresh_default_db_auto_restores_from_partitions(tmp_path, monkeypatch):
     insert_card_records([make_card("妥協(だきょう)", "妥協を拒んだ。")], db_path=src_db)
     export_cards(data_dir=data_dir, db_path=src_db)
 
-    monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "default.db")
-    monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    monkeypatch.setattr(db_helper.core, "DB_PATH", tmp_path / "default.db")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", data_dir)
     monkeypatch.setattr(config, "DATA_DIR", data_dir)
     result = check_word("妥協", db_path=None)  # db_path=None → default DB path
     assert result["exists"] is True
@@ -233,8 +233,8 @@ def test_get_connection_reconciles_when_partitions_change(tmp_path, monkeypatch)
     insert_card_records([make_card("妥協(だきょう)", "妥協を拒んだ。")], db_path=src_db)
     export_cards(data_dir=data_dir, db_path=src_db)
 
-    monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "default.db")
-    monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    monkeypatch.setattr(db_helper.core, "DB_PATH", tmp_path / "default.db")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", data_dir)
     monkeypatch.setattr(config, "DATA_DIR", data_dir)
     assert check_word("妥協", db_path=None)["exists"] is True  # fresh default DB restored
 
@@ -286,8 +286,8 @@ def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
     assert "known_words-문법_N3.jsonl" in result["unchanged"]
 
     # A fresh machine (empty default DB) restores the registry on first access.
-    monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "fresh.db")
-    monkeypatch.setattr(db_helper, "DATA_DIR", data_dir)
+    monkeypatch.setattr(db_helper.core, "DB_PATH", tmp_path / "fresh.db")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", data_dir)
     monkeypatch.setattr(config, "DATA_DIR", data_dir)
     result = check_word("大筋", db_path=None)
     assert result["exists"] is False  # no AnkiGen card
@@ -477,15 +477,15 @@ def test_norm_keys_rebuilt_when_normalizer_rules_change(tmp_path):
     seed_known(db, [{"word": "妥協", "reading": "だきょう", "source_deck": "S"}])
     conn = get_connection(db)
     conn.execute("UPDATE known_words SET norm_key = '옛규칙키'")
-    db_helper._set_meta(conn, "norm_version", "0")  # as if written by older rules
+    db_helper.core._set_meta(conn, "norm_version", "0")  # as if written by older rules
     conn.close()
 
     conn = get_connection(db)
     key = conn.execute("SELECT norm_key FROM known_words").fetchone()[0]
-    version = db_helper._get_meta(conn, "norm_version")
+    version = db_helper.core._get_meta(conn, "norm_version")
     conn.close()
     assert key == "妥協(だきょう)"
-    assert version == db_helper._NORM_VERSION
+    assert version == db_helper.core._NORM_VERSION
 
 def test_split_legacy_back():
     reading, meaning, tip = split_legacy_back(

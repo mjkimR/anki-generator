@@ -33,14 +33,14 @@ def write_file(tmp_path, cards, name="妥協.json"):
 
 def patch_backup(monkeypatch, tmp_path):
     """Points the auto-export at a temp dir so tests never touch the real data/."""
-    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(db_helper.core, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     return tmp_path / "data"
 
 def patch_attempts(monkeypatch, tmp_path):
     """Points the retry-cap sidecar at a temp file so tests never touch the real one."""
     sidecar = tmp_path / ".attempts.json"
-    monkeypatch.setattr(pipeline, "ATTEMPTS_PATH", sidecar)
+    monkeypatch.setattr(pipeline.core, "ATTEMPTS_PATH", sidecar)
     return sidecar
 
 def fake_tts_ok(monkeypatch):
@@ -59,11 +59,13 @@ def fake_anki_online(monkeypatch, deck="TestDeck"):
         if action == "addNote":
             return 12345
         raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
 def fake_anki_offline(monkeypatch):
     def fake_invoke(action, **params):
         raise Exception("connection refused")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
 def test_hangul_leak_regenerates_then_escalates(tmp_path, monkeypatch):
@@ -238,6 +240,7 @@ def test_backfill_audio_updates_db_and_anki_note(tmp_path, monkeypatch):
             captured["note"] = params["note"]
             return None
         raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
     result, code = pipeline.cmd_backfill_audio(db_path=db)
@@ -283,6 +286,7 @@ def test_backfill_audio_skips_synced_without_note_id(tmp_path, monkeypatch):
         if action == "deckNames":
             return ["TestDeck"]
         raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
     db_helper.insert_card_records([make_japanese_card(
         back_meaning="타협", synced_to_anki=1)], db_path=db)
@@ -300,7 +304,7 @@ def test_sync_pending_resynthesizes_missing_audio(tmp_path, monkeypatch):
     patch_backup(monkeypatch, tmp_path)
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(db_helper, "MEDIA_DIR", media)
+    monkeypatch.setattr(db_helper.core, "MEDIA_DIR", media)
     db_helper.insert_card_records([make_japanese_card(
         back_meaning="타협", audio_path="tts_missing.mp3")], db_path=db)
 
@@ -324,6 +328,7 @@ def test_sync_pending_resynthesizes_missing_audio(tmp_path, monkeypatch):
             captured["fields"] = params["note"]["fields"]
             return 555
         raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
     result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
@@ -337,7 +342,7 @@ def test_sync_pending_clears_audio_when_resynthesis_fails(tmp_path, monkeypatch)
     patch_backup(monkeypatch, tmp_path)
     media = tmp_path / "media"
     media.mkdir()
-    monkeypatch.setattr(db_helper, "MEDIA_DIR", media)
+    monkeypatch.setattr(db_helper.core, "MEDIA_DIR", media)
     db_helper.insert_card_records([make_japanese_card(
         back_meaning="타협", audio_path="tts_missing.mp3")], db_path=db)
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
@@ -367,6 +372,7 @@ def test_doctor_flags_synced_cards_missing_from_anki(tmp_path, monkeypatch):
         if action == "findNotes":
             return [222]  # some other note — 111 is gone / not synced to this machine
         raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
 
     result, code = pipeline.cmd_doctor(db_path=db)
@@ -395,10 +401,11 @@ def test_doctor_flags_known_words_mirror_drift(tmp_path, monkeypatch):
 def test_generation_only_run_skips_anki_and_tts(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     patch_backup(monkeypatch, tmp_path)
-    monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
     def boom(*args, **kwargs):
         raise AssertionError("no Anki/TTS work expected on a generation-only machine")
     monkeypatch.setattr(pipeline.tts_helper, "synthesize", boom)
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", boom)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", boom)
     path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
 
@@ -414,7 +421,7 @@ def test_generation_only_run_skips_anki_and_tts(tmp_path, monkeypatch):
     assert result["backup"]["total_cards"] == 1  # JSONL mirror refreshed
 
 def test_generation_only_blocks_sync_and_backfill(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
     result, code = pipeline.cmd_sync_pending("TestDeck", db_path=str(tmp_path / "t.db"))
     assert code == 1 and "generation-only" in result["message"]
     result, code = pipeline.cmd_backfill_audio(db_path=str(tmp_path / "t.db"))
@@ -422,9 +429,10 @@ def test_generation_only_blocks_sync_and_backfill(tmp_path, monkeypatch):
 
 def test_doctor_generation_only_marks_anki_disabled(tmp_path, monkeypatch):
     patch_backup(monkeypatch, tmp_path)  # isolate from the real data/ mirrors
-    monkeypatch.setattr(pipeline, "ANKI_ENABLED", False)
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
     def boom(*args, **kwargs):
         raise AssertionError("no AnkiConnect calls expected")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", boom)
     monkeypatch.setattr(pipeline.anki_connector, "invoke", boom)
 
     result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
@@ -440,8 +448,8 @@ def test_gc_media_removes_only_unreferenced(tmp_path, monkeypatch):
     pending_dir = tmp_path / "cards" / "pending"
     media_dir.mkdir()
     pending_dir.mkdir(parents=True)
-    monkeypatch.setattr(pipeline, "MEDIA_DIR", media_dir)
-    monkeypatch.setattr(pipeline, "CARDS_PENDING_DIR", pending_dir)
+    monkeypatch.setattr(pipeline.core, "MEDIA_DIR", media_dir)
+    monkeypatch.setattr(pipeline.core, "CARDS_PENDING_DIR", pending_dir)
 
     referenced = media_dir / "tts_keep.mp3"
     orphaned = media_dir / "tts_orphan.mp3"
@@ -469,7 +477,7 @@ def test_doctor_flags_missing_skill_symlink(tmp_path, monkeypatch):
     # A fresh clone: the gitignored .agents/skills symlink doesn't exist yet.
     patch_backup(monkeypatch, tmp_path)
     fake_anki_offline(monkeypatch)
-    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline.core, "PROJECT_ROOT", tmp_path)
 
     result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
     assert code == 0 and result["status"] == "ok"  # setup gap is warn-only
@@ -480,7 +488,7 @@ def test_doctor_flags_missing_skill_symlink(tmp_path, monkeypatch):
 def test_doctor_accepts_valid_skill_symlink(tmp_path, monkeypatch):
     patch_backup(monkeypatch, tmp_path)
     fake_anki_offline(monkeypatch)
-    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline.core, "PROJECT_ROOT", tmp_path)
     link_dir = tmp_path / ".agents" / "skills"
     link_dir.mkdir(parents=True)
     (link_dir / "anki_card_generator").symlink_to(pipeline.SKILL_DIR)
