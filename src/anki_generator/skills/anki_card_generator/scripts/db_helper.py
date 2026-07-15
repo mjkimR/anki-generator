@@ -1,8 +1,10 @@
 import os
+from typing import Any
 import re
 import sys
 import sqlite3
 import json
+import hashlib
 import argparse
 import unicodedata
 from pathlib import Path
@@ -12,8 +14,10 @@ current_file = Path(__file__).resolve()
 src_dir = current_file.parents[4]  # Path to the src/ directory
 sys.path.append(str(src_dir))
 
-from anki_generator.config import (DB_PATH, DATA_DIR, MEDIA_DIR, get_data_cards_dir,
-                                   get_data_known_words_dir, get_data_known_words_file)  # noqa: E402
+from anki_generator.config import (  # noqa: E402
+    DB_PATH, DATA_DIR, MEDIA_DIR, get_data_cards_dir,
+    get_data_known_words_dir, get_data_known_words_files,
+    get_data_known_words_partition)
 
 # Schema notes:
 # - root_id is deliberately NOT the primary key. Principle 1 (polysemy splitting) produces
@@ -53,8 +57,9 @@ REQUIRED_CARD_FIELDS = ("root_id", "front", "back_reading", "target_word", "pos"
 # known_words: snapshot registry of the legacy Anki decks (see docs/roadmap.md →
 # "Legacy Deck Migration"). One row per (kind, word, source_deck) — a word present in
 # two legacy decks keeps both rows; queries dedup by word. Only the stable fields are
-# mirrored to data/cards/known_words.jsonl; ease/ivl/reps drift with every review, so they
-# stay DB-local and Anki (via legacy_helper.py snapshot) remains their source of truth.
+# mirrored to data/known_words/known_words-<source>.jsonl (one partition per registered
+# source); ease/ivl/reps drift with every review, so they stay DB-local and Anki (via
+# legacy_helper.py snapshot) remains their source of truth.
 KNOWN_SCHEMA = """
 CREATE TABLE IF NOT EXISTS known_words (
     kind TEXT NOT NULL,            -- 'word' | 'grammar'
@@ -63,6 +68,8 @@ CREATE TABLE IF NOT EXISTS known_words (
     meaning TEXT,
     source_deck TEXT NOT NULL,     -- short source label, e.g. 'JLPT N1'
     status TEXT NOT NULL DEFAULT 'learned',  -- 'learned' | 'retired'
+    retired_at TIMESTAMP,          -- write-once: when the word left active study
+    retired_reason TEXT,           -- 'promoted' | 'manual' | 'retirement-pass'
     lapses INTEGER DEFAULT 0,
     ease REAL,                     -- DB-local (not mirrored)
     ivl INTEGER,                   -- DB-local (not mirrored)
@@ -75,7 +82,7 @@ CREATE TABLE IF NOT EXISTS known_words (
 """
 
 KNOWN_MIRROR_COLUMNS = ("kind", "word", "reading", "meaning", "source_deck",
-                        "status", "lapses")
+                        "status", "lapses", "retired_at", "retired_reason")
 
 _KANJI_RE = re.compile(r"[一-鿿]")
 _FURIGANA_RE = re.compile(r"[^\s\[\]]+\[([^\]]+)\]")   # 開[あ]く → あく
@@ -132,6 +139,34 @@ def _ensure_norm_keys(conn):
     elif stale:
         conn.commit()
 
+def _ensure_retired_columns(conn):
+    """Additive migration + one-time backfill for the retirement metadata columns
+    (designed 2026-07-15). retired_at / retired_reason are write-once: stamped when a
+    word retires, filled from the mirror when another machine retired it first. Rows
+    retired before the columns existed get backfilled: retired_at falls back to
+    updated_at (the retire flow was that column's last writer), and the reason is
+    'promoted' when a synced AnkiGen card exact-matches the word's norm_key (exactly
+    what retire-promoted acts on) and 'manual' otherwise (retire-word closes)."""
+    cursor = conn.cursor()
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(known_words)")}
+    if "retired_at" in columns:
+        return
+    cursor.execute("ALTER TABLE known_words ADD COLUMN retired_at TIMESTAMP")
+    cursor.execute("ALTER TABLE known_words ADD COLUMN retired_reason TEXT")
+    has_cards = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cards'").fetchone()
+    if has_cards:
+        cursor.execute("""
+            UPDATE known_words SET
+                retired_at = COALESCE(updated_at, CURRENT_TIMESTAMP),
+                retired_reason = CASE WHEN EXISTS (
+                    SELECT 1 FROM cards c WHERE c.synced_to_anki = 1
+                      AND (c.root_id = known_words.norm_key
+                           OR c.root_id LIKE known_words.norm_key || '(%')
+                ) THEN 'promoted' ELSE 'manual' END
+            WHERE status = 'retired'""")
+    conn.commit()
+
 def split_legacy_back(back):
     """Best-effort split of the legacy combined back string
     ('reading<br><br>[뜻] ...<br><br>[Tip] ...') into (reading, meaning, tip)."""
@@ -158,6 +193,7 @@ def ensure_schema(conn):
     cursor.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     cursor.execute(KNOWN_SCHEMA)
     _ensure_norm_keys(conn)
+    _ensure_retired_columns(conn)
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'")
     if not cursor.fetchone():
         cursor.execute(SCHEMA)
@@ -215,12 +251,10 @@ def get_connection(db_path=None):
     return conn
 
 def _mirror_files(data_dir):
-    """Every git-tracked JSONL file the DB mirrors: monthly card partitions plus the
-    known-words registry."""
+    """Every git-tracked JSONL file the DB mirrors: daily card partitions plus the
+    per-source known-words partitions."""
     files = list(get_data_cards_dir(data_dir).glob("cards-*.jsonl"))
-    known = get_data_known_words_file(data_dir)
-    if known.exists():
-        files.append(known)
+    files.extend(get_data_known_words_files(data_dir))
     return sorted(files)
 
 def _partitions_fingerprint(data_dir):
@@ -303,7 +337,7 @@ def check_word(word, db_path=None):
 
 # Upsert on (root_id, front): same sense updates in place (keeping the row id and its
 # original created_at unless the incoming card carries an explicit one — so re-inserted
-# cards never drift between monthly partitions), a new sense adds a row.
+# cards never drift between backup partitions), a new sense adds a row.
 _UPSERT_SQL = f"""
     INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
     VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
@@ -417,7 +451,9 @@ _RECONCILE_KNOWN_SQL = f"""
                        THEN excluded.reading ELSE known_words.reading END,
         meaning = CASE WHEN known_words.meaning IS NULL OR known_words.meaning = ''
                        THEN excluded.meaning ELSE known_words.meaning END,
-        norm_key = COALESCE(known_words.norm_key, excluded.norm_key)
+        norm_key = COALESCE(known_words.norm_key, excluded.norm_key),
+        retired_at = COALESCE(known_words.retired_at, excluded.retired_at),
+        retired_reason = COALESCE(known_words.retired_reason, excluded.retired_reason)
 """
 
 def _reconcile_known_words(conn, rows):
@@ -444,11 +480,12 @@ def _reconcile_known_words(conn, rows):
     return merged
 
 def _read_known_words(data_dir):
-    path = get_data_known_words_file(data_dir)
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()]
+    rows = []
+    for path in get_data_known_words_files(data_dir):
+        rows.extend(json.loads(line)
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line.strip())
+    return rows
 
 def insert_card_records(cards, db_path=None):
     """Upserts a list of card dicts. Incomplete cards are skipped and reported."""
@@ -547,12 +584,118 @@ def fetch_missing_audio(db_path=None):
     conn.close()
     return [_row_to_card(row, columns) for row in rows]
 
+# card_lemmas: per-card cache of the expensive step of the exposure counter
+# (docs/roadmap.md → "Exposure counter"): which content-word lemmas each example
+# sentence contains. Pure derived data — recomputable from cards at any time — so it
+# has no JSONL mirror, no doctor parity, and no tombstone concerns; a fresh clone
+# rebuilds it on first use. The word_exposure aggregate is NEVER stored: consumers
+# join card_lemmas against known_words live, so registry changes reflect
+# automatically and counters cannot drift.
+CARD_LEMMAS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS card_lemmas (
+    card_id INTEGER NOT NULL,      -- cards.id
+    lemma TEXT NOT NULL,           -- Janome base form (dictionary form, as written)
+    count INTEGER DEFAULT 1,       -- occurrences within this card's example
+    src_hash TEXT NOT NULL,        -- md5(_LEMMA_VERSION + back_reading) at extraction
+    PRIMARY KEY (card_id, lemma)
+);
+"""
+
+# Bump when extract_card_lemmas' rules change: the hash mismatch re-extracts every
+# card once (the same cache-invalidation pattern as norm_key's _NORM_VERSION).
+_LEMMA_VERSION = "1"
+
+_LEMMA_BRACKET_RE = re.compile(r"\[[^\]]+\]")
+# Grammatical machinery is not vocabulary exposure. Unmatched noise lemmas are
+# harmless by construction (they never join against the registry), so this filter
+# only needs to catch the obvious bulk, not be perfect.
+_LEMMA_SKIP_POS = ("助詞", "助動詞", "記号", "フィラー", "感動詞", "接頭詞",
+                   "名詞,数", "名詞,非自立", "名詞,代名詞", "動詞,接尾", "動詞,非自立")
+
+def _lemma_src_hash(back_reading):
+    return hashlib.md5(f"{_LEMMA_VERSION}:{back_reading or ''}".encode()).hexdigest()
+
+def extract_card_lemmas(back_reading, tokenizer: Any = None):
+    """Content-word lemma counts of one example sentence. The bracket furigana is
+    stripped (Janome re-reads the kanji text; the readings would be counted as words),
+    conjugations collapse to dictionary form via base_form, and particles/auxiliaries/
+    symbols are filtered as grammar, not vocabulary."""
+    if tokenizer is None:
+        from janome.tokenizer import Tokenizer
+        tokenizer = Tokenizer()
+    text = _LEMMA_BRACKET_RE.sub("", back_reading or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    counts = {}
+    for token in tokenizer.tokenize(text):
+        if token.part_of_speech.startswith(_LEMMA_SKIP_POS):
+            continue
+        lemma = token.base_form if token.base_form != "*" else token.surface
+        if len(lemma) < 2 and not _KANJI_RE.search(lemma):
+            continue  # single stray kana is segmentation noise, not a word
+        counts[lemma] = counts.get(lemma, 0) + 1
+    return counts
+
+def refresh_card_lemmas(conn):
+    """The lazy sweep keeping card_lemmas in step with cards — called by consumers
+    (coverage reports etc.), never on the reconcile hot path, so --check stays fast.
+    Only cards whose back_reading hash is missing or stale get re-tokenized; the hash
+    key makes this self-healing, so cards arriving via git reconcile are caught on
+    next use without any what's-new tracking. Returns the number of cards
+    (re)extracted."""
+    cursor = conn.cursor()
+    cursor.execute(CARD_LEMMAS_SCHEMA)
+    cached = dict(cursor.execute("SELECT DISTINCT card_id, src_hash FROM card_lemmas"))
+    rows = cursor.execute("SELECT id, back_reading FROM cards").fetchall()
+    stale = [(cid, br) for cid, br in rows if cached.get(cid) != _lemma_src_hash(br)]
+    orphans = set(cached) - {cid for cid, _ in rows}
+
+    if stale:
+        from janome.tokenizer import Tokenizer
+        tokenizer = Tokenizer()
+        for card_id, back_reading in stale:
+            src_hash = _lemma_src_hash(back_reading)
+            cursor.execute("DELETE FROM card_lemmas WHERE card_id = ?", (card_id,))
+            for lemma, count in extract_card_lemmas(back_reading, tokenizer).items():
+                cursor.execute(
+                    "INSERT INTO card_lemmas (card_id, lemma, count, src_hash)"
+                    " VALUES (?, ?, ?, ?)", (card_id, lemma, count, src_hash))
+    for card_id in orphans:
+        cursor.execute("DELETE FROM card_lemmas WHERE card_id = ?", (card_id,))
+    if stale or orphans:
+        conn.commit()
+    return len(stale)
+
+def _write_mirror_dir(directory, glob_pattern, partitions, written, unchanged, removed):
+    """Writes {file_name: [row, ...]} partitions deterministically (sorted keys, one
+    row per line), skipping byte-identical files, then removes files matching
+    glob_pattern that the current scheme no longer produces. The removal doubles as
+    scheme migration: the caller reconciled every existing mirror file into the DB
+    first, so a superseded file's rows are guaranteed to live on in the fresh set."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for file_name, rows in sorted(partitions.items()):
+        content = "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows
+        )
+        file_path = directory / file_name
+        if file_path.exists() and file_path.read_text(encoding="utf-8") == content:
+            unchanged.append(file_name)
+            continue
+        file_path.write_text(content, encoding="utf-8")
+        written.append(file_name)
+    for stale in directory.glob(glob_pattern):
+        if stale.name not in partitions:
+            stale.unlink()
+            removed.append(stale.name)
+
 def export_cards(data_dir=None, db_path=None):
-    """Exports the whole DB to monthly-partitioned JSONL files (data/cards/cards-YYYY-MM.jsonl,
-    partitioned on created_at) plus the known-words mirror (data/cards/known_words.jsonl,
-    stable fields only). One row per line, deterministic ordering and sorted JSON keys,
-    so re-exports are byte-identical and git diffs stay minimal. Partition files whose
-    month no longer holds any cards are removed.
+    """Exports the whole DB to daily-partitioned JSONL files
+    (data/cards/cards-YYYY-MM-DD.jsonl, partitioned on created_at) plus the
+    known-words mirror (data/known_words/known_words-<source>.jsonl, one partition per
+    registered source, stable fields only). One row per line, deterministic ordering
+    and sorted JSON keys, so re-exports are byte-identical and git diffs stay minimal.
+    Files the current scheme no longer produces are removed — which is also how a
+    partition-scheme change (e.g. the 2026-07-15 monthly→daily switch) migrates
+    itself on the first export.
 
     Exporting RECONCILES FROM the mirror files first, so an export can only ever add to
     what git already holds — a DB that is behind the repo (e.g. after a git pull from
@@ -566,58 +709,33 @@ def export_cards(data_dir=None, db_path=None):
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
     ).fetchall()
 
-    partitions = {}
+    card_partitions = {}
     for row in rows:
         card = _row_to_card(row, columns)
-        month = (card.get("created_at") or "")[:7] or "unknown"
-        partitions.setdefault(month, []).append(card)
+        day = (card.get("created_at") or "")[:10] or "unknown"
+        card_partitions.setdefault(f"cards-{day}.jsonl", []).append(card)
 
-    cards_dir = get_data_cards_dir(data_dir)
-    known_words_dir = get_data_known_words_dir(data_dir)
-    cards_dir.mkdir(parents=True, exist_ok=True)
-    known_words_dir.mkdir(parents=True, exist_ok=True)
-    written, unchanged, removed = [], [], []
-    expected = set()
-    for month, cards in sorted(partitions.items()):
-        file_name = f"cards-{month}.jsonl"
-        expected.add(file_name)
-        content = "".join(
-            json.dumps(card, ensure_ascii=False, sort_keys=True) + "\n" for card in cards
-        )
-        file_path = cards_dir / file_name
-        if file_path.exists() and file_path.read_text(encoding="utf-8") == content:
-            unchanged.append(file_name)
-            continue
-        file_path.write_text(content, encoding="utf-8")
-        written.append(file_name)
-
-    for stale in cards_dir.glob("cards-*.jsonl"):
-        if stale.name not in expected:
-            stale.unlink()
-            removed.append(stale.name)
-
-    # Mirror the known-words registry alongside the card partitions (stable fields
-    # only — see KNOWN_MIRROR_COLUMNS). Same determinism rules: sorted rows, sorted
-    # keys, skip the write when the content is unchanged.
+    # The known-words registry mirrors stable fields only (see KNOWN_MIRROR_COLUMNS),
+    # partitioned per source: source_deck is part of the primary key and never changes,
+    # so rows never migrate between files (a date split would need a creation date the
+    # registry doesn't have — and the initial snapshot arrived in one batch anyway).
     known_rows = conn.execute(
         f"SELECT {', '.join(KNOWN_MIRROR_COLUMNS)} FROM known_words"
         " ORDER BY kind, word, source_deck"
     ).fetchall()
-    known_path = get_data_known_words_file(data_dir)
-    if known_rows:
-        content = "".join(
-            json.dumps(dict(zip(KNOWN_MIRROR_COLUMNS, row)), ensure_ascii=False,
-                       sort_keys=True) + "\n"
-            for row in known_rows
-        )
-        if known_path.exists() and known_path.read_text(encoding="utf-8") == content:
-            unchanged.append(known_path.name)
-        else:
-            known_path.write_text(content, encoding="utf-8")
-            written.append(known_path.name)
-    elif known_path.exists():
-        known_path.unlink()
-        removed.append(known_path.name)
+    known_partitions = {}
+    for row in known_rows:
+        # NULL fields are omitted, not serialized: the learned majority stays compact
+        # and a retirement shows up as that one row gaining its retired_* keys.
+        record = {k: v for k, v in zip(KNOWN_MIRROR_COLUMNS, row) if v is not None}
+        file_name = get_data_known_words_partition(record["source_deck"], data_dir).name
+        known_partitions.setdefault(file_name, []).append(record)
+
+    written, unchanged, removed = [], [], []
+    _write_mirror_dir(get_data_cards_dir(data_dir), "cards-*.jsonl",
+                      card_partitions, written, unchanged, removed)
+    _write_mirror_dir(get_data_known_words_dir(data_dir), "known_words*.jsonl",
+                      known_partitions, written, unchanged, removed)
 
     # The export itself changed the mirror files — record their new fingerprint so
     # the next get_connection doesn't re-read what this DB just wrote.
@@ -659,7 +777,7 @@ def count_export_lines(data_dir=None):
     return len(files), lines
 
 def count_known_lines(data_dir=None):
-    """Returns the number of rows in the known_words.jsonl mirror (0 if absent)."""
+    """Returns the number of rows across the known-words mirror partitions (0 if none)."""
     return len(_read_known_words(data_dir or DATA_DIR))
 
 if __name__ == "__main__":
@@ -669,7 +787,7 @@ if __name__ == "__main__":
     parser.add_argument("--insert", type=str, help="Path to JSON file containing cards to insert")
     parser.add_argument("--pending", action="store_true", help="List cards not yet synced to Anki")
     parser.add_argument("--export", action="store_true",
-                        help="Export the DB to monthly JSONL partitions under data/cards/ and data/known_words/")
+                        help="Export the DB to daily JSONL partitions under data/cards/ and per-source partitions under data/known_words/")
     parser.add_argument("--import", dest="import_data", action="store_true",
                         help="Rebuild/merge the DB from the JSONL partitions under data/cards/")
     parser.add_argument("--data-dir", type=str, default=None,

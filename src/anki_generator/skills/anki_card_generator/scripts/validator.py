@@ -1,4 +1,5 @@
 import os
+from anki_generator.skills.anki_card_generator.scripts.schemas import ValidationResult
 import sys
 import re
 import json
@@ -284,7 +285,7 @@ def validate_reading_furigana(card):
                           "front by inserting furigana only.")
     return errors
 
-def validate_card_json(json_file_path, auto_fix=False):
+def validate_card_json(json_file_path, auto_fix=False) -> ValidationResult:
     if not os.path.exists(json_file_path):
         return {"valid": False, "errors": [f"File not found: {json_file_path}"]}
 
@@ -364,7 +365,7 @@ def validate_card_json(json_file_path, auto_fix=False):
                     "errors": card_errors
                 })
 
-        result = {"valid": not all_errors}
+        result: ValidationResult = {"valid": not all_errors}
         if all_errors:
             result["errors"] = all_errors
         if all_warnings:

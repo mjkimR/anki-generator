@@ -1,6 +1,6 @@
-"""Legacy deck migration helpers (shrink-first). Design, scope decisions, and history
-live in docs/roadmap.md → "Legacy Deck Migration"; the agent-facing playbook is the
-skill's legacy_migration.md.
+"""Legacy deck migration helpers (shrink-first). Strategy and remaining plan live in
+docs/roadmap.md → "Legacy Deck Migration"; shipped rounds and settled decisions in
+docs/history.md; the agent-facing playbook is the skill's legacy_migration.md.
 
 Everything here is deterministic code — no LLM anywhere — and fully deck-agnostic:
 nothing about the user's collection is hardcoded. Sources are DATA: registering a deck
@@ -17,6 +17,18 @@ import sys
 import json
 import argparse
 from pathlib import Path
+from typing import cast
+from anki_generator.skills.anki_card_generator.scripts.schemas import (
+    CmdListDecksResponse,
+    CmdInspectDeckResponse,
+    CmdSnapshotResponse,
+    CmdWeakQueueResponse,
+    CmdRetirePromotedResponse,
+    CmdRetireWordResponse,
+    CmdCoverageResponse,
+    CmdRetiredListResponse,
+    CmdArchiveDuplicatesResponse,
+)
 
 # Automatically add the src/ directory to the system path
 current_file = Path(__file__).resolve()
@@ -147,15 +159,17 @@ _SNAPSHOT_SQL = """
         updated_at = CURRENT_TIMESTAMP
 """
 
-def cmd_snapshot(db_path=None, sources=None):
+def cmd_snapshot(db_path=None, sources=None) -> tuple[CmdSnapshotResponse, int]:
     if not ANKI_ENABLED:
-        return {"status": "error",
-                "message": "snapshot reads the Anki collection — run it on a machine "
-                           "with Anki (ANKI_ENABLED=0 declares this one generation-only)"}, 1
+        return cast(CmdSnapshotResponse, {
+            "status": "error",
+            "message": "snapshot reads the Anki collection — run it on a machine "
+                       "with Anki (ANKI_ENABLED=0 declares this one generation-only)"
+        }), 1
     try:
         anki_connector.invoke("deckNames")
     except Exception as e:
-        return {"status": "error", "message": str(e)}, 1
+        return cast(CmdSnapshotResponse, {"status": "error", "message": str(e)}), 1
 
     conn = db_helper.get_connection(db_path)
     if sources is None:
@@ -186,8 +200,8 @@ def cmd_snapshot(db_path=None, sources=None):
     conn.close()
 
     export = db_helper.export_cards(db_path=db_path)
-    return {"status": "done", "snapshot_rows": len(rows), "registry_total": total,
-            "by_source": by_source, "mirror": export}, 0
+    return cast(CmdSnapshotResponse, {"status": "done", "snapshot_rows": len(rows), "registry_total": total,
+            "by_source": by_source, "mirror": export}), 0
 
 # Card-ownership matching runs on norm_key (root_id-shaped, derived at snapshot) in
 # two confidence tiers. EXACT: root_id equals the key, or extends it with a reading
@@ -200,7 +214,7 @@ _EXACT_MATCH_SQL = """EXISTS (SELECT 1 FROM cards c
 _READING_MATCH_SQL = """(w.norm_key NOT LIKE '%(%' AND EXISTS (SELECT 1 FROM cards c
     WHERE {extra} c.root_id LIKE '%(' || w.norm_key || ')'))"""
 
-def cmd_weak_queue(min_lapses=4, limit=20, db_path=None):
+def cmd_weak_queue(min_lapses=4, limit=20, db_path=None) -> tuple[CmdWeakQueueResponse, int]:
     """The promotion queue: learned words, worst first. Words that already own an
     AnkiGen card are excluded — reading-only matches too: wrongly hiding a rare
     homophone from a suggestion list is cheap, and retire-promoted will surface the
@@ -229,8 +243,8 @@ def cmd_weak_queue(min_lapses=4, limit=20, db_path=None):
          "reading": r[4], "meaning": r[5]}
         for r in rows[:limit]
     ]
-    return {"status": "done", "min_lapses": min_lapses, "total_matching": len(rows),
-            "returned": len(queue), "queue": queue}, 0
+    return cast(CmdWeakQueueResponse, {"status": "done", "min_lapses": min_lapses, "total_matching": len(rows),
+            "returned": len(queue), "queue": queue}), 0
 
 ARCHIVE_TAG = "ankigen-retired"
 
@@ -297,18 +311,23 @@ def _find_legacy_vocab_notes(word, sources):
             "findNotes", query=f"({source['query']}) ({field_query})"))
     return sorted(set(note_ids))
 
-def _retire_word_rows(conn, word, sources):
+def _retire_word_rows(conn, word, sources, reason):
     """Archives every legacy note of one registry word (all sources, live lookup) and
-    flips its registry rows to retired. Returns the per-word report entry."""
+    flips its registry rows to retired, stamping the write-once retirement metadata
+    (COALESCE keeps the first stamp on idempotent re-runs). Returns the per-word
+    report entry."""
     note_ids = _find_legacy_vocab_notes(word, sources)
     suspended = _archive_notes(note_ids)
     conn.execute(
-        "UPDATE known_words SET status = 'retired', updated_at = CURRENT_TIMESTAMP"
-        " WHERE kind = 'word' AND word = ?", (word,))
-    log(f"[Legacy] Retired {word}: {len(note_ids)} notes, {suspended} cards")
+        "UPDATE known_words SET status = 'retired',"
+        " retired_at = COALESCE(retired_at, CURRENT_TIMESTAMP),"
+        " retired_reason = COALESCE(retired_reason, ?),"
+        " updated_at = CURRENT_TIMESTAMP"
+        " WHERE kind = 'word' AND word = ?", (reason, word))
+    log(f"[Legacy] Retired {word}: {len(note_ids)} notes, {suspended} cards ({reason})")
     return {"word": word, "legacy_notes": len(note_ids), "cards_suspended": suspended}
 
-def cmd_retire_promoted(db_path=None):
+def cmd_retire_promoted(db_path=None) -> tuple[CmdRetirePromotedResponse, int]:
     """The promotion closer: every learned registry word whose norm_key EXACT-matches
     a SYNCED AnkiGen card gets its legacy cards suspended (+ tagged) and its registry
     status flipped to retired. An idempotent sweep rather than a per-push hook — it
@@ -318,7 +337,7 @@ def cmd_retire_promoted(db_path=None):
     close the confirmed ones with `retire-word`."""
     error = _require_anki()
     if error:
-        return error
+        return cast(tuple[CmdRetirePromotedResponse, int], error)
 
     conn = db_helper.get_connection(db_path)
     words = [row[0] for row in conn.execute(
@@ -330,7 +349,7 @@ def cmd_retire_promoted(db_path=None):
         """)]
 
     sources = _word_source_lookup(conn)
-    retired = [_retire_word_rows(conn, word, sources) for word in words]
+    retired = [_retire_word_rows(conn, word, sources, "promoted") for word in words]
     conn.commit()
 
     candidates = conn.execute(
@@ -365,16 +384,16 @@ def cmd_retire_promoted(db_path=None):
                           'retire-word "<word>"; a homophone → leave it learned.')
     if retired:
         result["mirror"] = db_helper.export_cards(db_path=db_path)
-    return result, 0
+    return cast(CmdRetirePromotedResponse, result), 0
 
-def cmd_retire_word(word, db_path=None):
+def cmd_retire_word(word, db_path=None) -> tuple[CmdRetireWordResponse, int]:
     """Retires one registry word after a judgment call — the closer for
     retire-promoted's needs_review entries, and the manual "I simply know this word"
     switch. Takes the exact registry word (as printed by weak-queue/retire-promoted),
     archives its legacy notes across all sources, and flips every row to retired."""
     error = _require_anki()
     if error:
-        return error
+        return cast(tuple[CmdRetireWordResponse, int], error)
 
     conn = db_helper.get_connection(db_path)
     statuses = [row[0] for row in conn.execute(
@@ -384,16 +403,97 @@ def cmd_retire_word(word, db_path=None):
         return {"status": "error",
                 "message": f"'{word}' is not in the registry — pass the exact registry"
                            " word as printed by weak-queue / retire-promoted"}, 1
-    entry = _retire_word_rows(conn, word, _word_source_lookup(conn))
+    entry = _retire_word_rows(conn, word, _word_source_lookup(conn), "manual")
     conn.commit()
     conn.close()
 
     result = {"status": "done",
               "already_retired": all(s == "retired" for s in statuses), **entry}
     result["mirror"] = db_helper.export_cards(db_path=db_path)
-    return result, 0
+    return cast(CmdRetireWordResponse, result), 0
 
-def cmd_archive_duplicates(sources, apply=False):
+def cmd_coverage(db_path=None, limit=10) -> tuple[CmdCoverageResponse, int]:
+    """Exposure coverage report (docs/roadmap.md → "Exposure counter"): how much of
+    the known-words registry the new-deck example sentences already touch. Lazily
+    refreshes the card_lemmas cache first (only new/changed cards get re-tokenized),
+    then aggregates live against the registry — exposure is derived data, never
+    stored state. Tiers: exact (kanji lemma ↔ norm_key word part) is trustworthy;
+    reading_only (kana ↔ kana) can hit homophones, so it is reported separately and
+    never acted on. Honest caveat: exposure ≠ active recall — it justifies retiring
+    *easy* words, never weak ones. Reads only the DB, so it works on Anki-less
+    machines."""
+    conn = db_helper.get_connection(db_path)
+    refreshed = db_helper.refresh_card_lemmas(conn)
+    lemma_rows = conn.execute(
+        "SELECT lemma, SUM(count) FROM card_lemmas GROUP BY lemma").fetchall()
+    kanji_lemmas, kana_lemmas = {}, {}
+    for lemma, total in lemma_rows:
+        bucket = kanji_lemmas if db_helper._KANJI_RE.search(lemma) else kana_lemmas
+        bucket[lemma] = total
+    words = conn.execute(
+        "SELECT word, source_deck, status, norm_key FROM known_words"
+        " WHERE kind = 'word'").fetchall()
+    conn.close()
+
+    per_source, top = {}, {}
+    for word, source, status, norm_key in words:
+        key = norm_key or word
+        word_part, _, rest = key.partition("(")
+        reading_part = rest[:-1] if rest.endswith(")") else ""
+        if db_helper._KANJI_RE.search(word_part):
+            exact = kanji_lemmas.get(word_part, 0)
+            reading = kana_lemmas.get(reading_part, 0) if reading_part else 0
+        else:  # bare kana headword — any match is homophone-risky by definition
+            exact = 0
+            reading = kana_lemmas.get(word_part, 0)
+        bucket = per_source.setdefault(
+            (source, status), {"words": 0, "exposed": 0, "reading_only": 0})
+        bucket["words"] += 1
+        if exact:
+            bucket["exposed"] += 1
+        elif reading:
+            bucket["reading_only"] += 1
+        if exact and status == "learned":
+            top[word] = max(top.get(word, 0), exact)
+
+    coverage = [
+        {"source": source, "status": status, "words": b["words"],
+         "exposed": b["exposed"], "pct": round(100 * b["exposed"] / b["words"], 1),
+         "reading_only": b["reading_only"]}
+        for (source, status), b in sorted(per_source.items())]
+    top_exposed = sorted(top.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    return cast(CmdCoverageResponse, {"status": "done", "lemmas_refreshed": refreshed,
+            "distinct_lemmas": len(lemma_rows),
+            "note": "exact-tier exposure only ever justifies retiring easy words; "
+                    "reading_only is kana↔kana (homophone risk) — reported, never "
+                    "acted on",
+            "coverage": coverage,
+            "top_exposed": [{"word": w, "count": c} for w, c in top_exposed]}), 0
+
+def cmd_retired_list(reason=None, db_path=None) -> tuple[CmdRetiredListResponse, int]:
+    """Audit view of the retirement ledger: retired words grouped across sources with
+    when and why they retired. Reads only the DB, so it works on Anki-less machines
+    whose registry arrived via git."""
+    conn = db_helper.get_connection(db_path)
+    where = "kind = 'word' AND status = 'retired'"
+    params = []
+    if reason:
+        where += " AND retired_reason = ?"
+        params.append(reason)
+    rows = conn.execute(f"""
+        SELECT word, MAX(meaning), GROUP_CONCAT(DISTINCT source_deck),
+               MAX(retired_at), MAX(retired_reason)
+        FROM known_words WHERE {where}
+        GROUP BY word
+        ORDER BY MAX(retired_at) DESC, word
+        """, params).fetchall()
+    conn.close()
+    return {"status": "done", "count": len(rows), "retired": [
+        {"word": word, "meaning": meaning, "sources": sources,
+         "retired_at": retired_at, "reason": retired_reason}
+        for word, meaning, sources, retired_at, retired_reason in rows]}, 0
+
+def cmd_archive_duplicates(sources, apply=False) -> tuple[CmdArchiveDuplicatesResponse, int]:
     """Duplicate compression: when a deck holds several notes per group value (e.g.
     ~9 example notes per grammar expression), keep the one that caused the least
     trouble (fewest lapses, then longest interval — resets come from hard words in
@@ -403,7 +503,7 @@ def cmd_archive_duplicates(sources, apply=False):
     one card now."""
     error = _require_anki()
     if error:
-        return error
+        return cast(tuple[CmdArchiveDuplicatesResponse, int], error)
 
     decks = []
     archive_note_ids = []
@@ -463,26 +563,26 @@ def cmd_archive_duplicates(sources, apply=False):
               "total_cards_suspended": len(suspend_card_ids)}
     if not apply:
         result["note"] = "dry-run — re-run with --apply to archive"
-    return result, 0
+    return cast(CmdArchiveDuplicatesResponse, result), 0
 
-def cmd_list_decks():
+def cmd_list_decks() -> tuple[CmdListDecksResponse, int]:
     """Deck names + card counts — the entry point of the migration conversation;
     the user picks the target from this list."""
     error = _require_anki()
     if error:
-        return error
+        return cast(tuple[CmdListDecksResponse, int], error)
     decks = [{"name": name, "cards": len(anki_connector.invoke(
                   "findCards", query=f'deck:"{name}"'))}
              for name in sorted(anki_connector.invoke("deckNames"))]
-    return {"status": "done", "decks": decks}, 0
+    return cast(CmdListDecksResponse, {"status": "done", "decks": decks}), 0
 
-def cmd_inspect_deck(deck, model=None):
+def cmd_inspect_deck(deck, model=None) -> tuple[CmdInspectDeckResponse, int]:
     """Everything the agent needs to propose a snapshot mapping for one deck:
     card-state counts, then per note model the field names with fill rates and a
     sample value (drawn from a middle note — first rows are often unrepresentative)."""
     error = _require_anki()
     if error:
-        return error
+        return cast(tuple[CmdInspectDeckResponse, int], error)
     query = _build_query(deck, model)
 
     def count(extra=""):
@@ -516,8 +616,8 @@ def cmd_inspect_deck(deck, model=None):
             "studied_notes": sum(1 for n in notes if n["noteId"] in studied_notes),
             "fields": fields,
         })
-    return {"status": "done", "deck": deck, "query": query, "cards": cards,
-            "models": models}, 0
+    return cast(CmdInspectDeckResponse, {"status": "done", "deck": deck, "query": query, "cards": cards,
+            "models": models}), 0
 
 def main():
     parser = argparse.ArgumentParser(description="Legacy deck migration helper")
@@ -575,6 +675,20 @@ def main():
     p_retire_word.add_argument("word", type=str)
     p_retire_word.add_argument("--db", type=str, default=None, help=argparse.SUPPRESS)
 
+    p_retired = sub.add_parser(
+        "retired-list", help="Audit the retirement ledger (who retired, when, why)")
+    p_retired.add_argument("--reason", type=str, default=None,
+                           choices=("promoted", "manual", "retirement-pass"),
+                           help="Filter by retirement reason")
+    p_retired.add_argument("--db", type=str, default=None, help=argparse.SUPPRESS)
+
+    p_cov = sub.add_parser(
+        "coverage",
+        help="Exposure coverage: how much of the registry the new-deck examples touch")
+    p_cov.add_argument("--limit", type=int, default=10,
+                       help="How many top-exposed learned words to list")
+    p_cov.add_argument("--db", type=str, default=None, help=argparse.SUPPRESS)
+
     args = parser.parse_args()
     if args.command == "snapshot":
         sources = None
@@ -601,6 +715,10 @@ def main():
         result, code = cmd_retire_promoted(db_path=args.db)
     elif args.command == "retire-word":
         result, code = cmd_retire_word(args.word, db_path=args.db)
+    elif args.command == "retired-list":
+        result, code = cmd_retired_list(reason=args.reason, db_path=args.db)
+    elif args.command == "coverage":
+        result, code = cmd_coverage(db_path=args.db, limit=args.limit)
     elif args.command == "list-decks":
         result, code = cmd_list_decks()
     elif args.command == "inspect-deck":

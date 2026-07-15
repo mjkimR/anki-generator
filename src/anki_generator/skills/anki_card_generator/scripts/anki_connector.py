@@ -22,7 +22,17 @@ MODEL_DIR = current_file.parent.parent / "anki_model"
 # by any template; it exists so Anki-side features (leech rescue, flag harvest) can
 # identify the word without depending on the note-id ↔ DB join.
 MODEL_FIELDS = ("Front", "Reading", "Meaning", "Tip", "Audio", "RootId")
-CARD_TEMPLATE_NAME = "Card 1"
+
+# Card templates, in order. "Card 1" MUST stay first (ordinal 0) so the vocab cards Anki
+# already built keep their identity; new templates are only ever appended, never reordered.
+# Front/Back name the git-managed files under anki_model/. "Listening" is audio-first: its
+# front gates on {{#Audio}}, so a note with no audio grows no listening card.
+VOCAB_TEMPLATE_NAME = "Card 1"
+LISTENING_TEMPLATE_NAME = "Listening"
+CARD_TEMPLATES = (
+    {"name": VOCAB_TEMPLATE_NAME, "front": "front.html", "back": "back.html"},
+    {"name": LISTENING_TEMPLATE_NAME, "front": "front_listening.html", "back": "back_listening.html"},
+)
 
 # Generated cards mark the target word as *word* — plain text, no HTML. The marker is
 # converted to a styled span only here, at push time; styling itself lives in style.css.
@@ -32,11 +42,19 @@ def marker_to_html(text):
     return TARGET_MARKER_RE.sub(r'<span class="t">\1</span>', text or "")
 
 def _load_model_assets():
-    return (
-        (MODEL_DIR / "front.html").read_text(encoding="utf-8"),
-        (MODEL_DIR / "back.html").read_text(encoding="utf-8"),
-        (MODEL_DIR / "style.css").read_text(encoding="utf-8"),
-    )
+    """Return (templates, css). templates is the ordered list of
+    {"Name", "Front", "Back"} dicts read from anki_model/ — the exact shape AnkiConnect's
+    createModel/modelTemplateAdd expect — and css is the shared stylesheet."""
+    css = (MODEL_DIR / "style.css").read_text(encoding="utf-8")
+    templates = [
+        {
+            "Name": t["name"],
+            "Front": (MODEL_DIR / t["front"]).read_text(encoding="utf-8"),
+            "Back": (MODEL_DIR / t["back"]).read_text(encoding="utf-8"),
+        }
+        for t in CARD_TEMPLATES
+    ]
+    return templates, css
 
 def log(message):
     """Diagnostics go to stderr — stdout is reserved for the final JSON result,
@@ -136,15 +154,18 @@ def push_card(card, deck_name, model_name):
 
 def ensure_note_model():
     """Creates the repo-owned note model in Anki if missing, and syncs its styling and
-    templates from the git-managed anki_model/ files when they drift. A same-named model
-    with a different field layout is refused rather than mutated — it isn't ours."""
+    card templates from the git-managed anki_model/ files when they drift. Templates Anki
+    doesn't have yet are ADDED (modelTemplateAdd) rather than the model being recreated,
+    so cards already built from earlier templates — and their review history — are never
+    touched; that is what makes retrofitting the listening template onto a live deck safe.
+    A same-named model with a different field layout is refused rather than mutated."""
     name = ANKI_NOTE_MODEL
-    front, back, css = _load_model_assets()
+    templates, css = _load_model_assets()
 
     if name not in invoke("modelNames"):
         invoke("createModel", modelName=name, inOrderFields=list(MODEL_FIELDS), css=css,
-               cardTemplates=[{"Name": CARD_TEMPLATE_NAME, "Front": front, "Back": back}])
-        log(f"[Anki] Created note model '{name}'")
+               cardTemplates=templates)
+        log(f"[Anki] Created note model '{name}' with {len(templates)} template(s)")
         return name
 
     fields = invoke("modelFieldNames", modelName=name)
@@ -159,13 +180,44 @@ def ensure_note_model():
         invoke("updateModelStyling", model={"name": name, "css": css})
         log(f"[Anki] Synced styling of '{name}' from anki_model/style.css")
 
-    desired = {"Front": front, "Back": back}
-    if invoke("modelTemplates", modelName=name).get(CARD_TEMPLATE_NAME) != desired:
-        invoke("updateModelTemplates",
-               model={"name": name, "templates": {CARD_TEMPLATE_NAME: desired}})
-        log(f"[Anki] Synced templates of '{name}' from anki_model/")
+    # Add the templates Anki is missing; update the ones whose HTML drifted. Adding a
+    # template makes Anki spawn its cards for every matching note at once (the {{#Audio}}
+    # gate keeps silent notes cardless) and leaves all existing cards in place.
+    existing = invoke("modelTemplates", modelName=name)
+    to_update = {}
+    for t in templates:
+        desired = {"Front": t["Front"], "Back": t["Back"]}
+        if t["Name"] not in existing:
+            invoke("modelTemplateAdd", modelName=name,
+                   template={"Name": t["Name"], "Front": t["Front"], "Back": t["Back"]})
+            log(f"[Anki] Added template '{t['Name']}' to '{name}'")
+        elif existing[t["Name"]] != desired:
+            to_update[t["Name"]] = desired
+    if to_update:
+        invoke("updateModelTemplates", model={"name": name, "templates": to_update})
+        log(f"[Anki] Synced {len(to_update)} template(s) of '{name}' from anki_model/")
 
     return name
+
+def route_listening_cards(source_deck, listening_deck):
+    """Code-owned deck routing for the Listening template. AnkiConnect exposes no
+    per-template Deck Override, so listening cards are born in the note's own deck (the
+    vocab deck) and this sweep relocates them to their own deck. Idempotent — once moved,
+    a card no longer matches the source-deck query — so it also drains the one-time
+    backlog created when the Listening template is first added to an existing deck.
+    Returns the number of cards moved."""
+    if not source_deck or not listening_deck or source_deck == listening_deck:
+        return 0
+    if listening_deck not in invoke("deckNames"):
+        invoke("createDeck", deck=listening_deck)
+        log(f"[Anki] Created listening deck: {listening_deck}")
+    query = (f'note:"{ANKI_NOTE_MODEL}" deck:"{source_deck}" '
+             f'card:"{LISTENING_TEMPLATE_NAME}"')
+    card_ids = invoke("findCards", query=query)
+    if card_ids:
+        invoke("changeDeck", cards=card_ids, deck=listening_deck)
+        log(f"[Anki] Routed {len(card_ids)} listening card(s) → {listening_deck}")
+    return len(card_ids)
 
 def push_to_anki(card_json_path, deck_name):
     if not os.path.exists(card_json_path):

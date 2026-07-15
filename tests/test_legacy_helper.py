@@ -1,3 +1,4 @@
+# pyright: reportTypedDictNotRequiredAccess=false
 import sys
 import json
 from pathlib import Path
@@ -111,11 +112,46 @@ def test_snapshot_builds_registry(tmp_path, monkeypatch):
     assert unstudied == 0        # never studied means not known
 
     # The stable fields were mirrored (and only them — norm_key is derived,
-    # ease is DB-local).
-    mirror = (tmp_path / "data" / "known_words" / "known_words.jsonl").read_text(encoding="utf-8")
+    # ease is DB-local), one partition per source.
+    mirror = "".join(
+        f.read_text(encoding="utf-8")
+        for f in sorted((tmp_path / "data" / "known_words").glob("known_words*.jsonl")))
     assert len(mirror.splitlines()) == 2
     assert '"ease"' not in mirror
     assert '"norm_key"' not in mirror
+
+def test_coverage_reports_exposure_tiers(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    monkeypatch.setattr(db_helper, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    seed_known(db, [
+        {"word": "妥協", "reading": "だきょう", "source_deck": "JLPT N2"},  # exact hit
+        {"word": "ゆっくり", "source_deck": "JLPT N3"},   # kana headword → reading tier
+        {"word": "大筋", "reading": "おおすじ", "source_deck": "JLPT N1"},  # no exposure
+    ])
+    db_helper.insert_card_records([
+        {"root_id": "拒む(こばむ)", "front": "妥協を*拒んだ*。",
+         "back_reading": "妥協[だきょう]を 拒[こば]んだ。", "target_word": "拒む",
+         "pos": "동사"},
+        {"root_id": "頷く(うなずく)", "front": "ゆっくり*頷いた*。",
+         "back_reading": "ゆっくり 頷[うなず]いた。", "target_word": "頷く",
+         "pos": "동사"},
+    ], db_path=db)
+
+    result, code = legacy_helper.cmd_coverage(db_path=db)
+    assert code == 0
+    by_source = {c["source"]: c for c in result["coverage"]}
+    # 妥協 appears in an example (non-target word!) — exact-tier exposure.
+    assert by_source["JLPT N2"]["exposed"] == 1
+    # A kana headword can only ever reading-match — quarantined, not "exposed".
+    assert by_source["JLPT N3"]["exposed"] == 0
+    assert by_source["JLPT N3"]["reading_only"] == 1
+    assert by_source["JLPT N1"]["exposed"] == 0
+    assert {e["word"] for e in result["top_exposed"]} == {"妥協"}
+
+    # Second run: the per-card cache is warm, nothing re-tokenizes.
+    result, _ = legacy_helper.cmd_coverage(db_path=db)
+    assert result["lemmas_refreshed"] == 0
 
 def test_snapshot_no_args_refreshes_registered_sources(tmp_path, monkeypatch):
     # Registration stores the spec; a no-argument snapshot re-reads every stored
@@ -256,7 +292,7 @@ def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_archive_invoke)
 
     result, code = legacy_helper.cmd_retire_promoted(db_path=db)
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     # Exact match (norm_key 妥協 ↔ root_id 妥協(だきょう)) retires automatically...
     assert result["retired"] == [
         {"word": "妥協", "legacy_notes": 2, "cards_suspended": 2},
@@ -280,7 +316,9 @@ def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     assert statuses["促す/JLPT N1"] == "learned"  # unsynced card doesn't retire yet
 
     # The status change reached the git mirror.
-    mirror = (tmp_path / "data" / "known_words" / "known_words.jsonl").read_text(encoding="utf-8")
+    mirror = "".join(
+        f.read_text(encoding="utf-8")
+        for f in sorted((tmp_path / "data" / "known_words").glob("known_words*.jsonl")))
     assert sum(1 for line in mirror.splitlines() if '"retired"' in line) == 3
 
     # The judgment call ("same word") closes the needs_review entry.
@@ -299,6 +337,24 @@ def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     # Idempotent: a re-run finds nothing left to do or review.
     result, _ = legacy_helper.cmd_retire_promoted(db_path=db)
     assert result["retired_count"] == 0
+
+    # Retirement metadata: the sweep stamps 'promoted', the judgment call 'manual',
+    # and retired-list reads the ledger back.
+    listing, code = legacy_helper.cmd_retired_list(db_path=db)
+    assert code == 0 and listing["count"] == 3
+    reasons = {r["word"]: r["reason"] for r in listing["retired"]}
+    # 退く was seeded retired without metadata — an honest None, not an invented stamp.
+    assert reasons == {"妥協": "promoted", "とがめる": "manual", "退く": None}
+    stamps = {r["word"]: r["retired_at"] for r in listing["retired"]}
+    assert stamps["妥協"] and stamps["とがめる"]
+    only_manual, _ = legacy_helper.cmd_retired_list(reason="manual", db_path=db)
+    assert [r["word"] for r in only_manual["retired"]] == ["とがめる"]
+    # The metadata reached the git mirror (NULL fields stay omitted for learned rows).
+    mirror = "".join(
+        f.read_text(encoding="utf-8")
+        for f in sorted((tmp_path / "data" / "known_words").glob("known_words*.jsonl")))
+    assert '"retired_reason": "promoted"' in mirror
+    assert '"retired_reason": "manual"' in mirror
     assert "needs_review" not in result
 
 def test_retire_word_requires_a_registry_word(tmp_path, monkeypatch):
@@ -404,7 +460,8 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
             "word_fields": ("Word",), "reading_fields": ("Kana",),
             "meaning_fields": ("Korean",)}
     result, code = legacy_helper.cmd_snapshot(db_path=db, sources=[spec])
-    assert code == 0 and result["snapshot_rows"] == 1
+    assert code == 0 and result["status"] == "done"
+    assert result["snapshot_rows"] == 1
 
     conn = get_connection(db)
     row = conn.execute(
@@ -415,6 +472,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
     assert row == ("跨る", "またがる", "걸치다", "N0", 2, "跨る(またがる)")
     # The FULL spec is remembered — no-arg snapshots can refresh it and
     # retire-promoted can find this deck's notes later.
+    assert stored is not None
     assert json.loads(stored)["N0"] == {
         "query": 'deck:"Custom::N0" note:"MyModel"', "kind": "word",
         "word_fields": ["Word"], "reading_fields": ["Kana"],
@@ -448,7 +506,8 @@ def test_retire_promoted_searches_stored_custom_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_invoke)
 
     result, code = legacy_helper.cmd_retire_promoted(db_path=db)
-    assert code == 0 and result["retired_count"] == 1
+    assert code == 0 and result["status"] == "done"
+    assert result["retired_count"] == 1
     assert seen["query"] == '(deck:"Custom::N0") ("Word:跨る")'
 
 def test_archive_duplicates_takes_custom_specs(monkeypatch):
@@ -483,7 +542,7 @@ def test_inspect_deck_reports_models_and_fill(monkeypatch):
     monkeypatch.setattr(legacy_helper.anki_connector, "invoke", fake_invoke)
 
     result, code = legacy_helper.cmd_inspect_deck("V")
-    assert code == 0
+    assert code == 0 and result["status"] == "done"
     assert result["cards"]["total"] == 3 and result["cards"]["new"] == 1
     model = result["models"][0]
     assert model["model"] == "JLPT 어휘"
@@ -495,6 +554,8 @@ def test_inspect_deck_reports_models_and_fill(monkeypatch):
 def test_archive_commands_decline_on_generation_only_machine(monkeypatch):
     monkeypatch.setattr(legacy_helper, "ANKI_ENABLED", False)
     result, code = legacy_helper.cmd_retire_promoted(db_path="/nonexistent/never-touched.db")
-    assert code == 1 and "generation-only" in result["message"]
+    assert code == 1 and result["status"] == "error"
+    assert "generation-only" in result["message"]
     result, code = legacy_helper.cmd_archive_duplicates([DEDUP_SPEC])
-    assert code == 1 and "generation-only" in result["message"]
+    assert code == 1 and result["status"] == "error"
+    assert "generation-only" in result["message"]

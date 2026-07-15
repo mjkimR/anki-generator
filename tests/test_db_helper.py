@@ -270,13 +270,20 @@ def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
 
     result = export_cards(data_dir=data_dir, db_path=src)
     assert result["known_words"] == 2
-    assert "known_words.jsonl" in result["written"]
-    mirror = (data_dir / "known_words" / "known_words.jsonl").read_text(encoding="utf-8")
+    # One partition per registered source (slug of the label).
+    assert "known_words-JLPT_N1.jsonl" in result["written"]
+    assert "known_words-문법_N3.jsonl" in result["written"]
+    mirror = "".join(
+        f.read_text(encoding="utf-8")
+        for f in sorted((data_dir / "known_words").glob("known_words*.jsonl")))
+    assert len(mirror.splitlines()) == 2
     assert '"norm_key"' not in mirror  # derived, recomputable — never mirrored
+    assert '"retired_at"' not in mirror  # NULL fields are omitted, not serialized
 
     # Deterministic: re-export is byte-identical.
     result = export_cards(data_dir=data_dir, db_path=src)
-    assert "known_words.jsonl" in result["unchanged"]
+    assert "known_words-JLPT_N1.jsonl" in result["unchanged"]
+    assert "known_words-문법_N3.jsonl" in result["unchanged"]
 
     # A fresh machine (empty default DB) restores the registry on first access.
     monkeypatch.setattr(db_helper, "DB_PATH", tmp_path / "fresh.db")
@@ -325,6 +332,101 @@ def test_known_words_reconcile_ratchets_status_and_lapses(tmp_path):
     assert rows["B"] == ("retired", 9)  # a stale 'learned' cannot downgrade local retired
     assert rows["C"] == ("learned", 0)  # new rows flow in
     assert norm["C"] == "C"  # mirror-imported rows get their derived key immediately
+
+def test_known_words_reconcile_fills_retirement_metadata(tmp_path):
+    db = str(tmp_path / "test.db")
+    data_dir = tmp_path / "data"
+    (data_dir / "known_words").mkdir(parents=True, exist_ok=True)
+    seed_known(db, [
+        {"word": "A", "source_deck": "S", "status": "retired"},  # metadata still NULL
+        {"word": "B", "source_deck": "S", "status": "retired"},  # stamped locally
+    ])
+    conn = get_connection(db)
+    conn.execute("UPDATE known_words SET retired_at = '2026-07-01 00:00:00',"
+                 " retired_reason = 'manual' WHERE word = 'B'")
+    conn.commit()
+    conn.close()
+    lines = [
+        {"kind": "word", "word": "A", "source_deck": "S", "status": "retired",
+         "retired_at": "2026-07-10 00:00:00", "retired_reason": "promoted"},
+        {"kind": "word", "word": "B", "source_deck": "S", "status": "retired",
+         "retired_at": "2026-07-12 00:00:00", "retired_reason": "promoted"},
+    ]
+    (data_dir / "known_words" / "known_words-S.jsonl").write_text(
+        "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines),
+        encoding="utf-8")
+
+    export_cards(data_dir=data_dir, db_path=db)
+
+    conn = get_connection(db)
+    rows = {w: (at, r) for w, at, r in conn.execute(
+        "SELECT word, retired_at, retired_reason FROM known_words")}
+    conn.close()
+    # Write-once semantics: another machine's stamp fills a local NULL, but never
+    # overwrites an existing local stamp.
+    assert rows["A"] == ("2026-07-10 00:00:00", "promoted")
+    assert rows["B"] == ("2026-07-01 00:00:00", "manual")
+
+def test_extract_card_lemmas_collapses_conjugation_and_drops_noise():
+    counts = db_helper.extract_card_lemmas("失敗を 咎[とが]められた。")
+    assert counts.get("失敗") == 1
+    assert counts.get("咎める") == 1  # conjugation collapses to dictionary form
+    assert "を" not in counts and "られる" not in counts  # grammar isn't exposure
+    assert "とが" not in counts  # bracket furigana stripped, not counted as a word
+
+def test_refresh_card_lemmas_only_reextracts_changed_cards(tmp_path):
+    db = str(tmp_path / "test.db")
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を*拒んだ*。",
+                  back_reading="妥協[だきょう]を 拒[こば]んだ。"),
+    ], db_path=db)
+
+    conn = get_connection(db)
+    assert db_helper.refresh_card_lemmas(conn) == 1
+    assert db_helper.refresh_card_lemmas(conn) == 0  # hash unchanged → skipped
+    lemmas = {row[0] for row in conn.execute("SELECT lemma FROM card_lemmas")}
+    assert {"妥協", "拒む"} <= lemmas
+
+    conn.execute("UPDATE cards SET back_reading = '妥協[だきょう]を 避[さ]けた。'")
+    conn.commit()
+    assert db_helper.refresh_card_lemmas(conn) == 1  # content change re-extracts
+    lemmas = {row[0] for row in conn.execute("SELECT lemma FROM card_lemmas")}
+    conn.close()
+    assert "避ける" in lemmas and "拒む" not in lemmas
+
+def test_retired_metadata_migration_backfills_old_db(tmp_path):
+    # A DB from before the retirement-metadata columns: the additive migration adds
+    # them and backfills retired rows — retired_at from updated_at (the retire flow
+    # was that column's last writer), the reason from card ownership.
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE known_words (
+        kind TEXT NOT NULL, word TEXT NOT NULL, reading TEXT, meaning TEXT,
+        source_deck TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'learned',
+        lapses INTEGER DEFAULT 0, ease REAL, ivl INTEGER, reps INTEGER,
+        anki_note_id INTEGER, norm_key TEXT, updated_at TIMESTAMP,
+        PRIMARY KEY (kind, word, source_deck))""")
+    conn.executemany(
+        "INSERT INTO known_words (kind, word, reading, source_deck, status, updated_at)"
+        " VALUES ('word', ?, ?, 'JLPT N1', ?, '2026-07-14 12:00:00')",
+        [("妥協", "だきょう", "retired"),   # exact-owns a synced AnkiGen card → promoted
+         ("とがめる", None, "retired"),     # no exact match (reading-only) → manual
+         ("大筋", "おおすじ", "learned")])  # never retired → stays untouched
+    conn.execute(db_helper.SCHEMA)
+    conn.execute(
+        "INSERT INTO cards (root_id, front, back_reading, target_word, pos,"
+        " synced_to_anki) VALUES ('妥協(だきょう)', '妥協を*拒んだ*。', 'r', '妥協',"
+        " '명사', 1)")
+    conn.commit()
+    conn.close()
+
+    conn = get_connection(db)  # runs the migration
+    rows = {w: (at, r) for w, at, r in conn.execute(
+        "SELECT word, retired_at, retired_reason FROM known_words")}
+    conn.close()
+    assert rows["妥協"] == ("2026-07-14 12:00:00", "promoted")
+    assert rows["とがめる"] == ("2026-07-14 12:00:00", "manual")
+    assert rows["大筋"] == (None, None)
 
 def test_check_word_matches_known_by_kanji_part(tmp_path):
     db = str(tmp_path / "test.db")
@@ -397,7 +499,7 @@ def test_split_legacy_back():
     reading, meaning, tip = split_legacy_back("よみ<br><br>[뜻] 뜻만")
     assert (reading, meaning, tip) == ("よみ", "뜻만", "")
 
-def test_export_partitions_by_month_and_is_deterministic(tmp_path):
+def test_export_partitions_by_day_and_is_deterministic(tmp_path):
     db = str(tmp_path / "test.db")
     data_dir = tmp_path / "data"
     insert_card_records([
@@ -407,14 +509,35 @@ def test_export_partitions_by_month_and_is_deterministic(tmp_path):
 
     result = export_cards(data_dir=data_dir, db_path=db)
     assert result["total_cards"] == 2
-    assert sorted(result["written"]) == ["cards-2026-06.jsonl", "cards-2026-07.jsonl"]
+    assert sorted(result["written"]) == ["cards-2026-06-15.jsonl", "cards-2026-07-01.jsonl"]
 
     # Re-export with no changes must be byte-identical (diff stability).
     result = export_cards(data_dir=data_dir, db_path=db)
     assert result["written"] == []
-    assert sorted(result["unchanged"]) == ["cards-2026-06.jsonl", "cards-2026-07.jsonl"]
+    assert sorted(result["unchanged"]) == ["cards-2026-06-15.jsonl", "cards-2026-07-01.jsonl"]
 
     assert count_export_lines(data_dir=data_dir) == (2, 2)
+
+def test_export_migrates_monthly_partitions_to_daily(tmp_path):
+    # Pre-2026-07-15 mirrors were monthly (cards-YYYY-MM.jsonl). The first export with
+    # the daily scheme must carry every row over and clean the old files up — reconcile
+    # runs first, so nothing can be lost by the rename.
+    db = str(tmp_path / "test.db")
+    data_dir = tmp_path / "data"
+    (data_dir / "cards").mkdir(parents=True, exist_ok=True)
+    legacy_rows = [
+        make_card("妥協(だきょう)", "妥協を拒んだ。", created_at="2026-06-15 10:00:00"),
+        make_card("先方(せんぽう)", "先方の意向を確認する。", created_at="2026-06-20 10:00:00"),
+    ]
+    (data_dir / "cards" / "cards-2026-06.jsonl").write_text(
+        "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in legacy_rows),
+        encoding="utf-8")
+
+    result = export_cards(data_dir=data_dir, db_path=db)
+    assert result["total_cards"] == 2
+    assert sorted(result["written"]) == ["cards-2026-06-15.jsonl", "cards-2026-06-20.jsonl"]
+    assert result["removed"] == ["cards-2026-06.jsonl"]
+    assert check_word("妥協", db_path=db)["exists"] is True
 
 def test_db_deletion_is_resurrected_by_export(tmp_path):
     # Reconcile-first export means git is a safety net: dropping a DB row alone brings
@@ -448,7 +571,7 @@ def test_export_removes_partitions_with_no_cards(tmp_path):
 
     result = export_cards(data_dir=data_dir, db_path=db)
     assert result["removed"] == ["cards-2026-05.jsonl"]
-    assert [f.name for f in sorted((data_dir / "cards").glob("cards-*.jsonl"))] == ["cards-2026-06.jsonl"]
+    assert [f.name for f in sorted((data_dir / "cards").glob("cards-*.jsonl"))] == ["cards-2026-06-15.jsonl"]
 
 def test_import_roundtrip_preserves_everything(tmp_path):
     src_db = str(tmp_path / "src.db")

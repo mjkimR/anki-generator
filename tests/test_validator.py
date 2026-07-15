@@ -1,3 +1,4 @@
+# pyright: reportTypedDictNotRequiredAccess=false
 import sys
 import json
 from pathlib import Path
@@ -40,13 +41,16 @@ def test_validate_pos_success():
 
 def test_validate_pos_failures():
     # Invalid main category
-    assert "Main POS category" in validate_pos("이상한품사")
+    err = validate_pos("이상한품사")
+    assert err is not None and "Main POS category" in err
     
     # Invalid sub-category
-    assert "Sub-POS category" in validate_pos("동사(이상한그룹)")
+    err = validate_pos("동사(이상한그룹)")
+    assert err is not None and "Sub-POS category" in err
     
     # Invalid grammar tag
-    assert "Grammar/conjugation" in validate_pos("동사(1그룹) - 이상한문법")
+    err = validate_pos("동사(1그룹) - 이상한문법")
+    assert err is not None and "Grammar/conjugation" in err
 
 def test_validate_korean_mix_success():
     # Truly valid card configuration

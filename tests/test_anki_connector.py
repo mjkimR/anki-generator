@@ -88,9 +88,13 @@ def test_ensure_note_model_creates_from_repo_assets(monkeypatch):
     assert "{{furigana:Reading}}" in created["cardTemplates"][0]["Back"]
     assert ".t {" in created["css"]
 
+def _all_templates_present(templates):
+    """modelTemplates response with every repo template already in Anki and matching."""
+    return {t["Name"]: {"Front": t["Front"], "Back": t["Back"]} for t in templates}
+
 def test_ensure_note_model_syncs_drifted_styling(monkeypatch):
     calls = []
-    front, back, css = anki_connector._load_model_assets()
+    templates, css = anki_connector._load_model_assets()
 
     def fake_invoke(action, **params):
         calls.append(action)
@@ -101,15 +105,83 @@ def test_ensure_note_model_syncs_drifted_styling(monkeypatch):
         if action == "modelStyling":
             return {"css": "/* stale */"}
         if action == "modelTemplates":
-            return {anki_connector.CARD_TEMPLATE_NAME: {"Front": front, "Back": back}}
+            return _all_templates_present(templates)
         if action == "updateModelStyling":
             return None
         raise AssertionError(f"unexpected action {action}")
 
     monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
     anki_connector.ensure_note_model()
-    assert "updateModelStyling" in calls       # drifted css got synced
+    assert "updateModelStyling" in calls        # drifted css got synced
     assert "updateModelTemplates" not in calls  # templates already match
+    assert "modelTemplateAdd" not in calls      # nothing missing to add
+
+def test_ensure_note_model_adds_missing_listening_template(monkeypatch):
+    """The vocab template exists but Listening does not — it must be ADDED (preserving the
+    existing cards), never trigger a model recreate."""
+    added = []
+    templates, css = anki_connector._load_model_assets()
+    vocab = templates[0]
+
+    def fake_invoke(action, **params):
+        if action == "modelNames":
+            return [anki_connector.ANKI_NOTE_MODEL]
+        if action == "modelFieldNames":
+            return list(anki_connector.MODEL_FIELDS)
+        if action == "modelStyling":
+            return {"css": css}
+        if action == "modelTemplates":
+            return {vocab["Name"]: {"Front": vocab["Front"], "Back": vocab["Back"]}}
+        if action == "modelTemplateAdd":
+            added.append(params["template"]["Name"])
+            return None
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    anki_connector.ensure_note_model()
+    assert added == [anki_connector.LISTENING_TEMPLATE_NAME]
+
+def test_route_listening_cards_moves_to_its_deck(monkeypatch):
+    calls = {}
+
+    def fake_invoke(action, **params):
+        if action == "deckNames":
+            return ["Vocab"]            # listening deck missing → gets created
+        if action == "createDeck":
+            calls["created"] = params["deck"]
+            return 1
+        if action == "findCards":
+            calls["query"] = params["query"]
+            return [10, 11, 12]
+        if action == "changeDeck":
+            calls["changeDeck"] = params
+            return None
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    moved = anki_connector.route_listening_cards("Vocab", "Listen")
+    assert moved == 3
+    assert calls["created"] == "Listen"
+    assert calls["changeDeck"] == {"cards": [10, 11, 12], "deck": "Listen"}
+    # Query is scoped to our model, the source deck, and the Listening template only.
+    assert 'card:"Listening"' in calls["query"]
+    assert 'deck:"Vocab"' in calls["query"]
+    assert f'note:"{anki_connector.ANKI_NOTE_MODEL}"' in calls["query"]
+
+def test_route_listening_cards_noop_when_nothing_to_move(monkeypatch):
+    seen = []
+
+    def fake_invoke(action, **params):
+        seen.append(action)
+        if action == "deckNames":
+            return ["Vocab", "Listen"]
+        if action == "findCards":
+            return []
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    assert anki_connector.route_listening_cards("Vocab", "Listen") == 0
+    assert "changeDeck" not in seen  # no cards → no write, stays idempotent
 
 def test_ensure_note_model_refuses_foreign_field_layout(monkeypatch):
     def fake_invoke(action, **params):
