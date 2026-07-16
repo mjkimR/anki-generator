@@ -11,11 +11,11 @@ It takes Japanese words, inflections, or sentences, extracts high-value targets,
 - **Automated Validation**: Restricts parts of speech (POS) formats, checks for accidental Korean/Japanese character pollution, and cross-validates Yomigana using the `Janome` morphological parser.
 - **Neural Text-to-Speech**: Synthesizes clean native Japanese audio (using `edge-tts`) and uploads it to the Anki media folder.
 - **Direct Anki Integration**: Uses the AnkiConnect API to automatically register card notes into a targeted deck.
-- **Git-Managed Card Design**: The Anki note model (fields, templates, CSS) lives in this repo under `src/anki_generator/skills/anki_card_generator/anki_model/` and is created/synced to Anki automatically — edit the CSS in git, and the next push updates Anki. Readings use Anki's built-in `{{furigana:}}` ruby rendering.
+- **Git-Managed Card Design**: The Anki note model (fields, templates, CSS) lives in this repo under `src/anki_generator/anki_model/` and is created/synced to Anki automatically — edit the CSS in git, and the next push updates Anki. Readings use Anki's built-in `{{furigana:}}` ruby rendering.
 
 ## Project Structure
 
-- `src/`: Main source files, scripts, and agent skill configurations.
+- `src/`: The Python package behind the `anki-gen` CLI, plus the agent skill instructions (`src/anki_generator/skills/`).
 - `data/`: **a clone of your separate, private data repository** (gitignored by this repo) —
   JSONL mirrors of the DB: card history under `data/cards/` (daily partitions) and the
   known-words registry snapshot of the legacy decks under `data/known_words/` (one
@@ -36,7 +36,7 @@ your personal card data stays private. Backing up = committing & pushing **insid
 
 - **Restore/merge is automatic**: a fresh clone rebuilds `anki_generator.db` from
   `data/cards/`, and after a `git pull` the next DB access merges in cards pulled from
-  another machine (manual equivalent: `db_helper.py --import`).
+  another machine (manual equivalent: `anki-gen db import`).
 - **Multiple machines work**: cards travel via the data repo, the Anki collection via
   AnkiWeb; exports only ever add to `data/cards/`, and audio is synthesized at push time by
   whichever machine pushes. A machine without Anki sets `ANKI_ENABLED=0` in its `.env`
@@ -44,15 +44,15 @@ your personal card data stays private. Backing up = committing & pushing **insid
   machine, sync Anki once before the first push. See `docs/architecture.md` →
   *Multiple Machines*.
 - **Anki can stay closed**: cards persist locally as pending and the next pipeline run
-  with Anki open pushes them automatically (`pipeline.py sync-pending` drains manually;
-  `pipeline.py backfill-audio` repairs cards whose TTS failed). See
+  with Anki open pushes them automatically (`anki-gen sync-pending` drains manually;
+  `anki-gen backfill-audio` repairs cards whose TTS failed). See
   `docs/architecture.md` → *Offline Behavior*.
-- **Known-words registry**: `legacy_helper.py snapshot` mirrors the legacy Anki decks
-  into per-source partitions under `data/known_words/` so `--check` also answers "already
-  known from the old decks", and `legacy_helper.py weak-queue` ranks which legacy words deserve a
-  regenerated card (the shrink-first migration — see `docs/roadmap.md`).
-- `pipeline.py doctor` verifies the DB and the JSONL mirror stay in sync and tells you
-  whether `--export` or `--import` is the right direction to fix a drift.
+- **Known-words registry**: `anki-gen legacy snapshot` mirrors the legacy Anki decks
+  into per-source partitions under `data/known_words/` so `anki-gen db check` also answers
+  "already known from the old decks", and `anki-gen legacy weak-queue` ranks which legacy
+  words deserve a regenerated card (the shrink-first migration — see `docs/roadmap.md`).
+- `anki-gen doctor` verifies the DB and the JSONL mirror stay in sync and tells you
+  whether `db export` or `db import` is the right direction to fix a drift.
 
 ## Setup & Installation
 
@@ -84,7 +84,7 @@ your personal card data stays private. Backing up = committing & pushing **insid
 uv sync
 ./setup_symlinks.sh
 git clone <your-anki-data-repo> data
-uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --init
+uv run anki-gen db init
 ```
 </details>
 

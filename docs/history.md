@@ -161,6 +161,91 @@ personal card data. This also resolves what the rejected cards-branch idea was f
   byte-identical. Coarsening back is the same mechanism in reverse, if daily ever
   feels too granular.
 
+## 2026-07-16 — Unified `anki-gen` CLI (Click) & package split
+
+The monolithic scripts (`pipeline.py`, `db_helper.py`, `legacy_helper.py`, …) became
+packages, each split into `core.py` (logic) + `cli.py` (Click commands), behind a single
+`anki-gen` entry point registered in `pyproject.toml` (landed 2026-07-15; interface
+cleanup finished 2026-07-16). What settled:
+
+- **`anki-gen` is the only invocation surface.** Direct script execution
+  (`python .../pipeline.py`) is gone: the packages carry no `__main__.py` and no
+  standalone `main()`s. Old flag-style modes became subcommands
+  (`db_helper.py --check` → `anki-gen db check`); everything — pipeline commands,
+  `db`/`legacy` groups, and the manual helpers (`validate`, `tts`, `push-file`) — is
+  discoverable from `anki-gen --help`.
+- **The stdout-JSON contract survives Click.** A missing card file returns the JSON
+  error object on stdout with exit 1 (library-level handling), not a Click usage error
+  on stderr — the agent parses stdout, so `click.Path(exists=True)` is deliberately
+  not used on file arguments. Regression-tested per CLI.
+- **In-band recovery messages name `anki-gen` commands** (run/sync/doctor responses),
+  since the agent executes what the JSON tells it to.
+- **The archive primitive moved to its consumer-neutral home**: `archive_notes()`
+  (suspend all cards of the notes + tag `ankigen-retired`) + `ARCHIVE_TAG` +
+  `cards_of_notes()` now live in `anki_connector`, not `legacy_helper` — leech
+  rescue's retire option targets AnkiGen's own cards and must not import the legacy
+  domain. Registry bookkeeping (`_retire_word_rows`, match SQL, needs_review flow)
+  stays in `legacy_helper`: it is migration-scoped and retires with it.
+  `archive-duplicates` keeps executing its user-approved dry-run plan card-by-card
+  (apply must touch exactly what the dry run showed) but shares the tag constant.
+- **Post-split boundary sweep (full-codebase review, two independent passes).**
+  Import graph verified clean — no cycles, no upward imports. What changed:
+  `scripts/common.py` collects the cross-package helpers that carry contracts
+  (`log`/`emit` = stdout-JSON, `coerce_cards` = accepted working-file shapes,
+  `generation_only_error` = the ANKI_ENABLED gate, `TARGET_MARKER_RE` = the marker
+  syntax the validator checks and the connector renders); consolidating
+  `coerce_cards` also fixed a latent gc-media bug (a bare single-card dict in
+  `cards/pending/` had its `audio_path` invisible to gc, so its mp3 could be
+  collected). `db_helper.get_meta/set_meta/KANJI_RE` went public — legacy_helper
+  was reaching into `db_helper.core._*` privates; the meta API is also the seam
+  tombstone delete-sync will use. Response TypedDicts were reconciled against the
+  actual response keys (inspect-deck/snapshot/sync-pending had drifted; `cast()`
+  hides this — keep schemas honest by hand). Dead `ANKI_ENABLED` `__getattr__`
+  shims and consumer-less path re-exports were deleted. Deliberately left in
+  place: the five differing Anki-reachability pings (each wants a different
+  failure shape), `push_to_anki`'s file orchestration (backs manual `push-file`),
+  Janome lemma extraction in db_helper (`_LEMMA_VERSION` must version with the
+  cache), and the frozen-config-binding sweep (convert to `config.<attr>` reads
+  as files get touched; new code should read attributes, not import values).
+
+### Packages flattened up; skills hold markdown only (same day)
+
+The split above still left every package nested under
+`skills/anki_card_generator/scripts/` — an artifact of the repo starting as one skill.
+The roadmap's next skills (output-practice, confusion cards) share the same DB,
+AnkiConnect boundary, config, and note-model infrastructure, so leaving the code under
+one skill would have forced the *next* skill to cross-import
+`skills/anki_card_generator/scripts/db_helper` across a skill boundary — the actual
+anti-pattern. Doing the move while there was still one skill was the cheapest it would
+ever be. What settled:
+
+- **Code moved to flat packages directly under `src/anki_generator/`** — a **shared
+  platform** every skill builds on (`db_helper/`, `anki_connector/`, `tts_helper/`,
+  `validator/`, `schemas/`, `common.py`) and **skill drivers** that orchestrate it
+  (`pipeline/`, `legacy_helper/`). Imports collapsed
+  `anki_generator.skills.anki_card_generator.scripts.X` → `anki_generator.X`. The
+  `anki-gen` entry point, pyproject `packages` (hatchling includes all of
+  `src/anki_generator`), and the stdout-JSON contract are all unaffected.
+- **`skills/` is markdown only.** A skill is a directory with a `SKILL.md` and nothing
+  else; the code it drives lives in the flat packages. The `.agents/skills` symlink no
+  longer exposes Python internals as "skill files."
+- **Legacy migration became its own skill.** `legacy_migration.md` →
+  `skills/legacy_migration/SKILL.md` (frontmatter added); `AGENTS.md` routes card
+  generation and legacy work to their two skills separately. `legacy_helper/` (the code)
+  stays a shared flat package.
+- **`anki_model/` templates moved up** to `src/anki_generator/anki_model/` — loaded by
+  `anki_connector` regardless of skill, so they live with the code (`MODEL_DIR` depth
+  adjusted). Kept the singular name: one model, multiple templates today; the model-list
+  generalization is future.
+- **`setup_symlinks.sh` and `doctor` enumerate skills** (any `skills/*/` with a
+  `SKILL.md`) instead of hardcoding one, so new skills are linked and checked
+  automatically; `SKILL_DIR` (one dir) became `SKILLS_DIR` (the root doctor walks).
+- **Deferred deliberately:** splitting `pipeline/` into a shared push/persist engine +
+  per-content-type drivers. Its persist→push→mirror→doctor→gc half is generic to any
+  Anki card, but the split waits until the confusion-card skill actually needs it
+  (speculative building = over-engineering). The name stayed `pipeline` (not `card_gen`)
+  so it doesn't misrepresent that shared half.
+
 ---
 
 ## Settled decisions (do not re-litigate)

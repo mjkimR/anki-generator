@@ -14,7 +14,7 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
     {
       "front": "緊迫した交渉の場において、彼は決断を*躊躇った*。",
       "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。",
-      "back_meaning": "긴박한 협상 자리에서 그는 결단을 망설였다.",
+      "back_meaning": "긴박한 협상 자리에서 그는 결단을 *망설였다*.",
       "back_tip": "'躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스이며, 주로 부정형이나 과거형으로 많이 쓰입니다.",
       "target_word": "躊躇った",
       "root_id": "躊躇う(ためらう)",
@@ -40,7 +40,7 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 
 - **`front`** *(string, Japanese-only)*: The Japanese example sentence, **plain text**, with the target word marked as `*word*`. No HTML — the pipeline converts the marker to a styled span at push time, and the styling itself lives in the git-managed note model CSS (`anki_model/style.css`).
 - **`back_reading`** *(string, Japanese-only)*: The same sentence with Anki bracket furigana on **every** kanji word (`決断[けつだん]を 躊躇[ためら]った`) — okurigana outside the brackets, a half-width space before each annotated word. Rendered as ruby text by the `{{furigana:Reading}}` template filter. Generated in Pass A together with the other Japanese fields.
-- **`back_meaning`** *(string, Korean-only)*: The context-appropriate Korean meaning ([뜻]). Filled in Pass B only.
+- **`back_meaning`** *(string, Korean-only)*: The context-appropriate Korean meaning ([뜻]). Filled in Pass B only. Mark the phrase that translates the target word with `*…*` — the same marker `front` uses; the pipeline converts it to the same highlight span at push time (e.g. `그는 결단을 *망설였다*.`).
 - **`back_tip`** *(string, Korean-only, optional)*: Usage-nuance explanation vs. confusable synonyms ([Tip]). Filled in Pass B only.
 
   > The Anki-facing back string (`reading<br><br>[뜻] …<br><br>[Tip] …`) is **composed by the pipeline at push time**; storage keeps the languages separated.
@@ -95,13 +95,14 @@ To prevent index pollution and font display issues, adhere to strict separation 
   - `collocations`
   - **Must only contain Japanese Kanji (Shinjitai), Hiragana, and Katakana.** Ensure that Korean Hanja is never used (e.g. use `売` instead of `賣`, `圧` instead of `壓`).
 - **Korean-Only Fields**:
-  - `back_meaning`, `back_tip` (Pass B commentary).
+  - `back_meaning`, `back_tip` (Pass B commentary). The only exception is the `*…*` target
+    marker in `back_meaning`, mirroring the `front` field.
 
 ### Enforcement (schema + two-tier validation)
 
 Language isolation is enforced **structurally**: Japanese and Korean never share a field, and
 generation happens in **two single-language passes** (Japanese fields first, Korean commentary
-second) so no single decode mixes the scripts. Remaining leaks are handled by `validator.py`
+second) so no single decode mixes the scripts. Remaining leaks are handled by the validator
 in two tiers:
 
 1. **Old-form / Korean-style hanja (壓, 賣, 內, 敎 …)** are corrected *mechanically*. Running the

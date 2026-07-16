@@ -16,7 +16,7 @@
    only generate cards and another machine will push, set `ANKI_ENABLED=0` in `.env`.
 3. Verify with the doctor:
    ```bash
-   uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py doctor
+   uv run anki-gen doctor
    ```
    If anything is missing (skill symlink, DB↔JSONL drift, …) it tells you how to fix it.
 
@@ -29,7 +29,7 @@ Open Claude Code in this repo directory and **just say it.** The skill
 - `Pick the words worth studying from this sentence and make cards: 先方の意向を踏まえ、価格改定は見送る運びとなった。`
 - `I want to add a few words from today's meeting` (then list the words)
 
-The agent handles everything: duplicate check (`--check`) → Japanese generation →
+The agent handles everything: duplicate check (`db check`) → Japanese generation →
 pipeline validation → Korean meaning/tip pass → DB persist → TTS synthesis → Anki push
 → `data/` mirror refresh. All you see is the final report. If a word already exists, it
 asks whether to add a card for a different sense or skip.
@@ -48,7 +48,7 @@ with them**. Only when you want to push right now, with no new card session comi
 the manual drain:
 
 ```bash
-uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending
+uv run anki-gen sync-pending
 ```
 
 On an `ANKI_ENABLED=0` (generation-only) machine, committing & pushing `data/` *is* the
@@ -68,7 +68,7 @@ wrap-up — an Anki-equipped machine picks the cards up from there after a pull.
 ## 4. Legacy deck work (promotion sessions)
 
 Promoting weak words from the old decks into fresh cards is also driven by talking to
-the agent — it follows the playbook (`legacy_migration.md`):
+the agent — it follows the legacy-migration playbook:
 
 - `Let's do a promotion session` / `Show me the 10 weakest legacy words`
   → pick from the weak-queue → generate cards as usual → `retire-promoted` suspends the
@@ -82,28 +82,27 @@ Legacy work also ends the same way: commit & push `data/`.
 
 ## 5. Command cheatsheet
 
-The paths are long, so aliases are recommended (`~/.zshrc`):
+Everything lives under the single `anki-gen` entry point (`uv run anki-gen --help` lists
+it all). An alias keeps it short (`~/.zshrc`):
 
 ```bash
-alias akg-pipe='uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py'
-alias akg-db='uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py'
-alias akg-legacy='uv run python src/anki_generator/skills/anki_card_generator/scripts/legacy_helper.py'
+alias akg='uv run anki-gen'
 ```
 
 | Command | When to use it |
 |---|---|
-| `akg-pipe doctor` | First stop when anything seems off. Checks env/DB/mirror/Anki |
-| `akg-pipe sync-pending` | Push cards made while Anki was closed, right now |
-| `akg-pipe backfill-audio` | Repair cards that synced silent (TTS failed) |
-| `akg-pipe sync-decks` | Re-run routing when Listening cards linger in the vocab deck |
-| `akg-pipe gc-media` | Delete mp3s no card references (occasionally) |
-| `akg-db --check "単語"` | Does this word already have a card + was it known in the legacy decks |
-| `akg-db --pending` | List cards not yet pushed to Anki |
-| `akg-db --export` / `--import` | Manual DB↔JSONL mirror (doctor tells you the direction) |
-| `akg-legacy weak-queue --limit 10` | Promotion candidates (most lapses first) |
-| `akg-legacy retire-promoted` | Suspend the legacy cards of every promoted word |
-| `akg-legacy retire-word "単語"` | Manual "I simply know this word" retire |
-| `akg-legacy retired-list` / `coverage` | Retirement ledger / example-sentence exposure (no Anki needed) |
+| `akg doctor` | First stop when anything seems off. Checks env/DB/mirror/Anki |
+| `akg sync-pending` | Push cards made while Anki was closed, right now |
+| `akg backfill-audio` | Repair cards that synced silent (TTS failed) |
+| `akg sync-decks` | Re-run routing when Listening cards linger in the vocab deck |
+| `akg gc-media` | Delete mp3s no card references (occasionally) |
+| `akg db check "単語"` | Does this word already have a card + was it known in the legacy decks |
+| `akg db pending` | List cards not yet pushed to Anki |
+| `akg db export` / `db import` | Manual DB↔JSONL mirror (doctor tells you the direction) |
+| `akg legacy weak-queue --limit 10` | Promotion candidates (most lapses first) |
+| `akg legacy retire-promoted` | Suspend the legacy cards of every promoted word |
+| `akg legacy retire-word "単語"` | Manual "I simply know this word" retire |
+| `akg legacy retired-list` / `coverage` | Retirement ledger / example-sentence exposure (no Anki needed) |
 
 The rest (`run`, `snapshot`, `archive-duplicates`, …) are commands the agent runs for
 you mid-conversation — you'll rarely type them yourself.
@@ -113,7 +112,7 @@ you mid-conversation — you'll rarely type them yourself.
 | Symptom | Remedy |
 |---|---|
 | Something's wrong (cause unknown) | `doctor` first. It usually tells you the fix direction too |
-| After a fresh clone, Claude doesn't know the skill | `./setup_symlinks.sh` (the symlink is gitignored, so it doesn't travel with a clone) |
+| After a fresh clone, Claude doesn't know the skills | `./setup_symlinks.sh` (the symlinks are gitignored, so they don't travel with a clone) |
 | A card has no audio | `backfill-audio` (network required) |
 | Listening cards showing in the vocab deck | `sync-decks` |
 | A card deleted from the DB came back | Working as designed — the git mirror is the source, so it resurrects. Real deletion (tombstones) is on the roadmap |

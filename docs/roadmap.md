@@ -184,7 +184,7 @@ which keeps `lapses` a clean weakness signal.
    offline on 2026-07-15; only ~7 pilot cards exist in Anki, 143 still DB-pending — so the
    retrofit is tiny and low-risk.)
 3. **Text-mining batch mode** — long text in → batch-extract N1+ candidates →
-   batch `--check` dedup → user confirms the list → pipeline runs per word.
+   batch `db check` dedup → user confirms the list → pipeline runs per word.
 4. **Weekly stats routine** — review stats summary, leech list, output-practice
    targets. Only worth building after the above are in real use.
 
@@ -236,7 +236,7 @@ rejected (`docs/history.md` → *Settled decisions*).
 retire-promoted/retire-word tooling, grammar compression, deck-agnostic generalization
 (Phases A+B), identity normalization (Levels 1+2). Survey facts and measured numbers:
 `docs/history.md`; current behavior: `docs/architecture.md` §6; session recipes: the
-skill's `legacy_migration.md`. Archive semantics everywhere stay **suspend + tag
+`legacy_migration` skill's `SKILL.md`. Archive semantics everywhere stay **suspend + tag
 `ankigen-retired`** — reversible, review history preserved, batched, idempotent.
 
 **Remaining work:**
@@ -249,7 +249,7 @@ skill's `legacy_migration.md`. Archive semantics everywhere stay **suspend + tag
 2. **Exposure counter** — **v1 shipped 2026-07-15** (mechanism, tier design, and the
    first live numbers: `docs/history.md`; current behavior: `docs/architecture.md`):
    `card_lemmas` per-card cache + `refresh_card_lemmas` lazy sweep +
-   `legacy_helper.py coverage` live-join report with exact / reading-only tiers.
+   `anki-gen legacy coverage` live-join report with exact / reading-only tiers.
    Still open here:
    - **Reverse use**: generation prompts get 3–5 "weave in if natural" hint words
      from the weak/retiring list — no extra LLM calls (examples are LLM-written

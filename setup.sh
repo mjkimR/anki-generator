@@ -26,8 +26,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 uv sync
 
-# --- [2/5] Agent skill symlink -------------------------------------------------
-echo "[2/5] Linking the agent skill..."
+# --- [2/5] Agent skill symlinks ------------------------------------------------
+echo "[2/5] Linking the agent skills..."
 ./setup_symlinks.sh
 
 # --- [3/5] Data repository (private) -------------------------------------------
@@ -70,11 +70,11 @@ fi
 
 # --- [5/5] Database init / restore ----------------------------------------------
 echo "[5/5] Initializing the SQLite DB (restores every card from data/ mirrors)..."
-uv run --package anki_generator anki-gen db init
+uv run anki-gen db init
 
 echo ""
 echo "✔ Setup complete. Remaining manual bits:"
 echo "  - Anki machine: install Anki + the AnkiConnect add-on (ID 2055492159, port 8765),"
 echo "    and sync with AnkiWeb once BEFORE the first push (see docs/architecture.md → Multiple Machines)."
 echo "  - Generation-only machine (no Anki here, ever): echo 'ANKI_ENABLED=0' >> .env"
-echo "  - Health check anytime: uv run --package anki_generator anki-gen doctor"
+echo "  - Health check anytime: uv run anki-gen doctor"

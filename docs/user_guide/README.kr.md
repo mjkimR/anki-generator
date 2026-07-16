@@ -10,7 +10,7 @@
 2. Anki Desktop 및 AnkiConnect 애드온(포트 8765) 실행 — 카드 생성만 이 기기에서 하고 푸시는 다른 기기에서 처리하려면 `.env` 파일에 `ANKI_ENABLED=0`을 설정합니다.
 3. 환경 점검은 `doctor` 명령어로 수행:
    ```bash
-   uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py doctor
+   uv run anki-gen doctor
    ```
    설정이 누락되었거나 오류가 있는 경우(스킬 심링크 미연결, DB↔JSONL 불일치 등) 해결 방법까지 함께 안내해 줍니다.
 
@@ -22,7 +22,7 @@
 - `이 문장에서 공부할 만한 단어 뽑아서 카드로: 先方の意向を踏まえ、価格改定は見送る運びとなった。`
 - `오늘 회의에서 나온 단어 몇 개 추가하고 싶어` (단어를 나열해주면 됩니다)
 
-에이전트가 중복 체크(`--check`), 일본어 예문 생성, 파이프라인 검증, 한국어 뜻 및 팁(Tip) 추가, DB 저장, TTS 합성, Anki 푸시, `data/` 미러 갱신까지 모든 단계를 자동으로 진행합니다. 사용자는 최종 결과 리포트만 확인하면 됩니다. 이미 등록된 단어라면 다른 뜻으로 추가할지 아니면 건너뛸지(Skip) 확인을 요청합니다.
+에이전트가 중복 체크(`db check`), 일본어 예문 생성, 파이프라인 검증, 한국어 뜻 및 팁(Tip) 추가, DB 저장, TTS 합성, Anki 푸시, `data/` 미러 갱신까지 모든 단계를 자동으로 진행합니다. 사용자는 최종 결과 리포트만 확인하면 됩니다. 이미 등록된 단어라면 다른 뜻으로 추가할지 아니면 건너뛸지(Skip) 확인을 요청합니다.
 
 **작업 세션을 마칠 때는 항상 백업 커밋을 해주세요.** `data/` 디렉토리는 별도의 프라이빗 저장소(private repository)이므로 동기화 스크립트를 통해 편하게 백업을 진행할 수 있습니다. (이 작업 또한 에이전트에게 지시할 수 있습니다.)
 
@@ -35,7 +35,7 @@
 Anki가 꺼져 있어도 오류가 발생하지 않습니다. 카드는 DB에 '대기(pending)' 상태로 안전하게 저장되며, **다음에 Anki를 켠 상태로 카드를 생성할 때 대기 중이던 카드들도 함께 자동으로 푸시**됩니다. 새 카드 생성 세션을 시작하지 않고 대기 중인 카드를 즉시 동기화하고 싶을 때만 아래 명령어를 수동으로 실행합니다:
 
 ```bash
-uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending
+uv run anki-gen sync-pending
 ```
 
 `ANKI_ENABLED=0` 기기(생성 전용)에서는 `data/` 디렉토리를 커밋하고 푸시하는 것으로 작업이 마무리됩니다. 이후 Anki가 연동된 기기에서 `git pull`을 받으면 해당 기기에서 푸시가 처리됩니다.
@@ -48,7 +48,7 @@ uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py 
 
 ## 4. 레거시 덱 작업 (승격 세션)
 
-기존 덱에서 학습이 부족한 단어(약한 단어)를 새 카드로 승격시키는 작업 역시 에이전트에게 자연어로 지시할 수 있으며, 이 경우 플레이북(`legacy_migration.md`)에 따라 작업이 진행됩니다:
+기존 덱에서 학습이 부족한 단어(약한 단어)를 새 카드로 승격시키는 작업 역시 에이전트에게 자연어로 지시할 수 있으며, 이 경우 레거시 마이그레이션 플레이북에 따라 작업이 진행됩니다:
 
 - `"승격 세션 하자" / "레거시에서 가장 약한 단어 10개 보여줘"`라고 요청합니다.
   → weak-queue에서 단어를 선택하고 → 평소와 같이 카드를 생성한 다음 → `retire-promoted` 명령어로 이전 카드를 보류(suspend) 처리합니다. (기록이 삭제되지 않으며 언제든지 복구 가능합니다.) → `needs_review` 상태가 발생하면 동음이의어 여부만 함께 판단합니다.
@@ -59,28 +59,26 @@ uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py 
 
 ## 5. 명령어 치트시트(Cheatsheet)
 
-자주 쓰는 명령어의 경로가 길기 때문에 셸 설정 파일(`~/.zshrc` 등)에 단축어(alias)를 등록하여 사용하는 것을 권장합니다:
+모든 명령은 단일 진입점인 `anki-gen` 아래에 있습니다 (`uv run anki-gen --help`로 전체 목록 확인 가능). 셸 설정 파일(`~/.zshrc` 등)에 단축어(alias)를 등록하면 더 짧게 쓸 수 있습니다:
 
 ```bash
-alias akg-pipe='uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py'
-alias akg-db='uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py'
-alias akg-legacy='uv run python src/anki_generator/skills/anki_card_generator/scripts/legacy_helper.py'
+alias akg='uv run anki-gen'
 ```
 
 | 명령어 | 용도 / 실행 시점 |
 |---|---|
-| `akg-pipe doctor` | 시스템 상태가 비정상적일 때 가장 먼저 실행. 환경 설정, DB, 미러링 상태, Anki 연동을 일괄 점검 |
-| `akg-pipe sync-pending` | Anki가 꺼진 상태에서 생성되어 대기 중인 카드를 즉시 Anki로 동기화(푸시) |
-| `akg-pipe backfill-audio` | 네트워크 오류 등으로 TTS 오디오 없이 생성된 카드의 음성 데이터 복구 |
-| `akg-pipe sync-decks` | 듣기(Listening) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
-| `akg-pipe gc-media` | 어떤 카드로도 참조되지 않고 유실된 미디어 파일(mp3)을 일괄 정리 (주기적으로 가끔 실행) |
-| `akg-db --check "単語"` | 특정 단어의 기존 카드 존재 여부 및 레거시 덱 등록 여부 확인 |
-| `akg-db --pending` | 아직 Anki 앱으로 푸시되지 않고 대기 중인 카드 목록 조회 |
-| `akg-db --export` / `--import` | SQLite DB와 JSONL 미러 파일 간의 수동 동기화 (`doctor` 명령어가 동기화 방향을 알려줍니다) |
-| `akg-legacy weak-queue --limit 10` | 레거시 덱에서 승격 대상인 후보 단어 조회 (망각 횟수인 lapses가 많은 순) |
-| `akg-legacy retire-promoted` | 승격 완료된 단어에 해당하는 레거시 덱의 카드를 일괄 보류(suspend) 처리 |
-| `akg-legacy retire-word "単語"` | "이미 충분히 알고 있는 단어"로 지정하여 수동으로 학습 대상에서 제외(retire) |
-| `akg-legacy retired-list` / `coverage` | 학습 제외(retire) 이력 조회 / 예문 노출 커버리지 리포트 출력 (Anki 앱 실행 불필요) |
+| `akg doctor` | 시스템 상태가 비정상적일 때 가장 먼저 실행. 환경 설정, DB, 미러링 상태, Anki 연동을 일괄 점검 |
+| `akg sync-pending` | Anki가 꺼진 상태에서 생성되어 대기 중인 카드를 즉시 Anki로 동기화(푸시) |
+| `akg backfill-audio` | 네트워크 오류 등으로 TTS 오디오 없이 생성된 카드의 음성 데이터 복구 |
+| `akg sync-decks` | 듣기(Listening) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
+| `akg gc-media` | 어떤 카드로도 참조되지 않고 유실된 미디어 파일(mp3)을 일괄 정리 (주기적으로 가끔 실행) |
+| `akg db check "単語"` | 특정 단어의 기존 카드 존재 여부 및 레거시 덱 등록 여부 확인 |
+| `akg db pending` | 아직 Anki 앱으로 푸시되지 않고 대기 중인 카드 목록 조회 |
+| `akg db export` / `db import` | SQLite DB와 JSONL 미러 파일 간의 수동 동기화 (`doctor` 명령어가 동기화 방향을 알려줍니다) |
+| `akg legacy weak-queue --limit 10` | 레거시 덱에서 승격 대상인 후보 단어 조회 (망각 횟수인 lapses가 많은 순) |
+| `akg legacy retire-promoted` | 승격 완료된 단어에 해당하는 레거시 덱의 카드를 일괄 보류(suspend) 처리 |
+| `akg legacy retire-word "単語"` | "이미 충분히 알고 있는 단어"로 지정하여 수동으로 학습 대상에서 제외(retire) |
+| `akg legacy retired-list` / `coverage` | 학습 제외(retire) 이력 조회 / 예문 노출 커버리지 리포트 출력 (Anki 앱 실행 불필요) |
 
 `run`, `snapshot`, `archive-duplicates` 등의 기타 명령어들은 에이전트가 대화 중에 상황에 맞춰 내부적으로 실행하므로, 사용자가 직접 입력할 일은 거의 없습니다.
 

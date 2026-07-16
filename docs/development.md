@@ -1,9 +1,9 @@
 # Development Guide
 
 Read this **before modifying code** in this repository. (Role routing lives in the
-root `AGENTS.md`; this file is for the coding role only.) The runtime card-generation
-instructions — `SKILL.md` and `legacy_migration.md` under the skill directory — are
-product artifacts whose wording is part of the design, not guidance for you.
+root `AGENTS.md`; this file is for the coding role only.) The runtime agent
+instructions — the `SKILL.md` files under `src/anki_generator/skills/` — are product
+artifacts whose wording is part of the design, not guidance for you.
 
 ## What this project is
 
@@ -11,7 +11,8 @@ An agent-driven pipeline that generates Japanese vocabulary cards (JLPT N1 / bus
 level) and pushes them to Anki: extract targets → validate (POS, furigana, language
 isolation) → persist to SQLite → synthesize TTS at push time → push via AnkiConnect →
 mirror to git-friendly JSONL. The generation agent only writes card content; all control
-flow lives in `pipeline.py` ("prose instructions can be ignored by a model; code cannot").
+flow lives in the `pipeline/` package ("prose instructions can be ignored by a model;
+code cannot").
 
 ## Commands
 
@@ -21,11 +22,11 @@ uv run pytest                # run the test suite
 uv run ruff check            # lint (E402 ignored in tests/ — they bootstrap sys.path)
 uv run pyright               # type check
 
-./setup.sh <data-repo-url>   # full setup: deps + skill symlink + data/ clone + DB init
-./setup_symlinks.sh          # (re)create .agents/skills symlink only
+./setup.sh <data-repo-url>   # full setup: deps + skill symlinks + data/ clone + DB init
+./setup_symlinks.sh          # (re)create the .agents/skills symlinks only
 
-uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py doctor
-                             # end-to-end environment / DB↔JSONL parity check
+uv run anki-gen doctor       # end-to-end environment / DB↔JSONL parity check
+uv run anki-gen --help       # the single CLI entry point (pyproject [project.scripts])
 ```
 
 Tests must pass without Anki running and without a `data/` clone — Anki being offline is
@@ -37,15 +38,30 @@ a designed-for normal state everywhere in this codebase, never an error path.
   `ANKI_CONNECT_URL`, `ANKI_DEFAULT_DECK`, `ANKI_LISTENING_DECK`, `ANKI_NOTE_MODEL`,
   `ANKI_ENABLED` (`0` = generation-only machine), `TTS_DEFAULT_VOICE`. Never hardcode
   paths or deck names elsewhere — add them here.
-- `src/anki_generator/skills/anki_card_generator/`
-  - `scripts/` — the pipeline: `pipeline.py` (deterministic driver, the only orchestrator),
-    `db_helper.py` (SQLite + JSONL mirror), `validator.py`, `tts_helper.py`,
-    `anki_connector.py`, `legacy_helper.py` (legacy-deck migration mechanics).
-  - `anki_model/` — the git-owned Anki note model: `front.html`/`back.html` (vocab),
-    `front_listening.html`/`back_listening.html` (audio-first), `style.css`. The repo,
-    not the Anki profile, owns the card look; `ensure_note_model()` syncs drift.
-  - `SKILL.md`, `legacy_migration.md` — runtime agent instructions.
-- `tests/` — pytest unit tests, one file per script.
+- `src/anki_generator/cli.py` — the `anki-gen` Click entry point; the ONLY way the
+  packages are invoked (they have no `__main__.py` and no standalone execution path).
+- `src/anki_generator/` — flat Python packages, each split into `core.py` (logic) +
+  `cli.py` (Click commands). They fall into two layers:
+  - **Shared platform** every skill builds on: `db_helper/` (SQLite + JSONL mirror),
+    `anki_connector/` (AnkiConnect + the repo-owned note model), `tts_helper/`,
+    `validator/`, `schemas/` (TypedDict response shapes — keep them matching the actual
+    response keys; `cast()` won't catch drift), and `common.py` (cross-package helpers:
+    `log`/`emit` carry the stdout-JSON contract, `coerce_cards` the accepted
+    working-file shapes, `TARGET_MARKER_RE` the marker contract — stdlib+click+config
+    imports only, every package imports it).
+  - **Skill-specific drivers** that orchestrate the platform: `pipeline/` (the
+    deterministic card-generation driver, the only orchestrator) and `legacy_helper/`
+    (legacy-deck migration mechanics). New skills add sibling driver packages here; a
+    driver imports the shared platform, never another skill's package.
+- `src/anki_generator/anki_model/` — the git-owned Anki note model: `front.html`/
+  `back.html` (vocab), `front_listening.html`/`back_listening.html` (audio-first),
+  `style.css`. The repo, not the Anki profile, owns the card look; `ensure_note_model()`
+  syncs drift. Loaded by `anki_connector` regardless of skill, so it lives with the code.
+- `src/anki_generator/skills/<name>/SKILL.md` — runtime agent instructions, **markdown
+  only** (no code): `anki_card_generator` (card generation) and `legacy_migration`
+  (legacy-deck playbook). `setup_symlinks.sh` symlinks each into `.agents/skills/`,
+  auto-discovering every directory that carries a `SKILL.md`.
+- `tests/` — pytest unit tests, one directory per package mirroring the layout above.
 - `docs/` — see the doc map below.
 - Gitignored, personal, never committed here: `anki_generator.db`, `media/`, `cards/`,
   `data/`, `*.jsonl`, `.env`, `.agents/`.
@@ -81,11 +97,12 @@ an explicit user decision.
 - **Retry cap lives in the sidecar** `cards/pending/.attempts.json`, outside the working
   file, so file rewrites cannot reset it.
 - **Archive semantics everywhere**: suspend + tag `ankigen-retired` — reversible, review
-  history preserved. Deletion is deliberately not implemented (real deletion awaits a
-  tombstone-based delete-sync design).
+  history preserved; the primitive is `anki_connector.archive_notes()`, single-sourced.
+  Deletion is deliberately not implemented (real deletion awaits a tombstone-based
+  delete-sync design).
 - **Script I/O contract**: stdout carries only the final JSON result (the agent's
   interface); diagnostics go to stderr.
-- **Nothing about the user's collection is hardcoded** in `legacy_helper.py` — sources
+- **Nothing about the user's collection is hardcoded** in `legacy_helper/` — sources
   are registered data in the DB `meta` table; deck-specific judgment belongs to the
   agent conversation.
 

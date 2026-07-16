@@ -9,11 +9,13 @@ document for your job and skip the other.
 
 ## Which instructions apply to you
 
-- **Card generation / legacy-deck work** — the user gives Japanese words or sentences,
-  or asks to promote weak legacy words, register a deck, retire known words: this is the
-  `anki_card_generator` skill's job. Invoke the skill and follow its `SKILL.md`
-  (legacy work: `legacy_migration.md` next to it) rather than improvising. No other doc
-  in this repo is required reading for that role.
+- **Card generation** — the user gives Japanese words or sentences to turn into cards:
+  this is the `anki_card_generator` skill's job. Invoke the skill and follow its
+  `SKILL.md` rather than improvising.
+- **Legacy-deck work** — the user asks to promote weak legacy words, register/absorb a
+  deck into the known-words registry, retire known words, or compress duplicates: this
+  is the `legacy_migration` skill's job. Invoke it and follow its `SKILL.md`. No other
+  doc in this repo is required reading for either of these two roles.
 - **Working on the codebase** — changing or extending the pipeline, tests, or docs:
   read **`docs/development.md` before modifying code**. It carries the commands, the
   layout, and the settled architectural invariants that must not be broken without an
