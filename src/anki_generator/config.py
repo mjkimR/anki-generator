@@ -16,7 +16,7 @@ DB_PATH = PROJECT_ROOT / "anki_generator.db"
 ANKI_CONNECT_URL = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
 ANKI_DEFAULT_DECK = os.getenv("ANKI_DEFAULT_DECK", "Japanese::Vocabulary")
 # Note model owned by this repo: created in Anki on first push and kept in sync with the
-# git-managed templates/CSS under skills/anki_card_generator/anki_model/.
+# git-managed templates/CSS under src/anki_generator/anki_model/.
 ANKI_NOTE_MODEL = os.getenv("ANKI_NOTE_MODEL", "AnkiGen JA")
 # Audio-first "Listening" cards live in their own deck so that deck's own new-cards/day
 # limit throttles the listening backlog independently of the vocab deck. Set the real
@@ -32,9 +32,10 @@ ANKI_ENABLED = os.getenv("ANKI_ENABLED", "1").strip().lower() not in ("0", "fals
 # TTS configuration
 TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
 
-# Temporary directory for media files
+# Temporary directory for media files. Created on demand by the write sites
+# (tts_helper.generate_speech mkdir's it before saving) — never at import time, so
+# importing config has no filesystem side effects and tests can redirect it freely.
 MEDIA_DIR = PROJECT_ROOT / "media"
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Text backup of the DB: partitioned JSONL living in a SEPARATE private data
 # repository cloned at data/ (gitignored by this repo; see setup.sh). Cards partition
@@ -68,7 +69,7 @@ def get_data_known_words_files(data_dir=None) -> list:
 
 # Card working files: one JSON per target word under pending/, archived to done/
 # after the pipeline persists them (the DB is the source of truth from then on).
+# Created on demand by the write sites (pipeline.core.save_json and archive_file
+# mkdir their parents) — not at import time, keeping config import side-effect free.
 CARDS_PENDING_DIR = PROJECT_ROOT / "cards" / "pending"
 CARDS_DONE_DIR = PROJECT_ROOT / "cards" / "done"
-CARDS_PENDING_DIR.mkdir(parents=True, exist_ok=True)
-CARDS_DONE_DIR.mkdir(parents=True, exist_ok=True)

@@ -12,9 +12,9 @@ or a full sentence, generate cards and drive the pipeline to completion.
 > **Division of labor.** You (the agent) do exactly two things: **generate content** and **react
 > to the pipeline's structured responses**. All control flow — step ordering, the retry cap,
 > validation, DB persistence, Anki sync (with TTS at push time) — is enforced in code by
-> `pipeline.py`. Do not run
-> the individual helper scripts (validator/tts/connector/db-insert) yourself; the driver calls
-> them in the right order with the right preconditions.
+> the pipeline driver behind the `anki-gen` CLI. Do not run
+> the individual helper commands (`validate`/`tts`/`push-file`/`db insert`) yourself; the
+> driver calls them in the right order with the right preconditions.
 
 > **Why the instructions are in English.** Japanese and Korean share the CJK ideograph block, so
 > their tokens are near-identical and the model silently code-switches mid-generation. Keeping the
@@ -30,10 +30,10 @@ or a full sentence, generate cards and drive the pipeline to completion.
 1. If the user gave a sentence, use your own knowledge to extract the high-value advanced
    vocabulary (N2~N1 or business words/idioms) worth studying, and build a target-word list
    (e.g. `奔走する`, `妥協`).
-2. For each extracted target, check whether it is already registered (`--check` is the only
+2. For each extracted target, check whether it is already registered (`db check` is the only
    helper you call directly during card generation — everything else goes through the
-   driver; legacy-deck work has its own commands, see `legacy_migration.md`):
-   * `uv run python src/anki_generator/skills/anki_card_generator/scripts/db_helper.py --check "<word>"`
+   driver; legacy-deck work is a separate skill, see `legacy_migration`):
+   * `uv run anki-gen db check "<word>"`
 3. If the response reports `exists: true`, inspect `count` and `matches` (a polysemous word may
    already own several sense cards):
    * Ask the user whether to add a new card for a different sense, or skip this word.
@@ -60,7 +60,7 @@ clobber each other.
 
 ### [Step 3] Run the Pipeline & React
 Run the driver:
-* `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py run cards/pending/<word>.json`
+* `uv run anki-gen run cards/pending/<word>.json`
 
 React to the JSON `status` — nothing else:
 
@@ -79,7 +79,9 @@ Notes:
 
 ### [Step 4] Korean Pass (Pass B — monolingual)
 Add to each listed card **only** these fields:
-* `back_meaning`: the context-appropriate Korean meaning ([뜻]).
+* `back_meaning`: the context-appropriate Korean meaning ([뜻]). Mark the phrase that
+  translates the target word with `*…*`, exactly as `front` marks the target — it renders
+  in the same highlight color at push time (e.g. `그는 결단을 *망설였다*.`).
 * `back_tip`: nuance differences vs. confusable synonyms ([Tip]) — optional but recommended.
 * `tags`: search tags (e.g. `["비즈니스", "N1", "동사"]`). Tags may contain Korean — which
   is exactly why they belong to this pass, not Pass A.
@@ -94,7 +96,7 @@ Report the final summary to the user: cards created, sense splits, sync status, 
 `warnings` or `tts_warnings`. Special cases:
 * `anki_online: false` — cards are safely persisted in the DB. They sync automatically on
   the next run with Anki open; to push immediately instead, the user can open Anki and run:
-  `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py sync-pending`
+  `uv run anki-gen sync-pending`
   (If the driver message says this machine is generation-only — `ANKI_ENABLED=0` — just
   remind the user to commit & push in `data/` — it is its own private repo; an Anki
   machine picks the cards up from there.)
@@ -104,23 +106,23 @@ Report the final summary to the user: cards created, sense splits, sync status, 
   errors.
 * `tts_warnings` — those cards were created without audio; recover later (network required)
   via:
-  `uv run python src/anki_generator/skills/anki_card_generator/scripts/pipeline.py backfill-audio`
+  `uv run anki-gen backfill-audio`
 * If the driver reports the `data/` backup was refreshed, remind the user to commit &
   push it (`data/` is a separate private repo — commits happen inside it, not here).
 
 ### Utilities (run when relevant, not every time)
 * Environment health check (use when something seems broken, or on first run):
-  `uv run python .../scripts/pipeline.py doctor`
+  `uv run anki-gen doctor`
 * Backfill audio for cards created without it (earlier `tts_warnings`):
-  `uv run python .../scripts/pipeline.py backfill-audio`
+  `uv run anki-gen backfill-audio`
 * Clean up orphaned audio files (occasionally, or when the user asks):
-  `uv run python .../scripts/pipeline.py gc-media`
+  `uv run anki-gen gc-media`
 
 ### Legacy decks (승격 / 마이그레이션) — read the playbook first
 When the user wants anything involving the **legacy decks** — promoting weak words
 (승격), registering/absorbing another deck into the known-words registry, or
-compressing duplicate notes — read **`legacy_migration.md`** (next to this file) and
-follow it. Do not improvise the flow from memory: the playbook carries the exact
+compressing duplicate notes — switch to the **`legacy_migration`** skill and follow its
+`SKILL.md`. Do not improvise the flow from memory: the playbook carries the exact
 commands, the deck-registration conversation, and the dry-run-before-apply safety rules.
 
 ---
@@ -161,7 +163,7 @@ commands, the deck-registration conversation, and the dry-run-before-apply safet
 * **세부분류**: 1그룹, 2그룹, 3그룹, 자동사, 타동사, 대명사, 고유명사, 수사, 조동사적명사
 * **활용/문법**: 수동, 사역, 사역수동, 가정, 명령, 존경어, 겸양어, 정중어, 활용 없음
 
-> POS enum values stay in Korean because `validator.py` matches those exact strings.
+> POS enum values stay in Korean because the validator matches those exact strings.
 
 ---
 
@@ -187,7 +189,7 @@ senses (Principle 1). Field ownership is strict:
 
 | Field | Type | Rule |
 |---|---|---|
-| `back_meaning` | string | Context-appropriate Korean meaning ([뜻]) |
+| `back_meaning` | string | Context-appropriate Korean meaning ([뜻]); mark the target's translation with `*…*` (same highlight as `front`) |
 | `back_tip` | string | Korean nuance tip vs. confusable synonyms ([Tip]) — optional |
 | `tags` | string[] | Search tags, Korean allowed (e.g. `["비즈니스", "N1", "동사"]`) |
 
@@ -226,7 +228,7 @@ After the driver answers `need_korean`, add **only** the Pass B keys to that sam
 the file now also carries driver-written keys such as `status`; leave them untouched:
 
 ```json
-"back_meaning": "긴박한 협상 자리에서 그는 결단을 망설였다.",
+"back_meaning": "긴박한 협상 자리에서 그는 결단을 *망설였다*.",
 "back_tip": "'躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스. 사양해서 삼가는 '遠慮する'와 구별됨.",
 "tags": ["비즈니스", "N1", "동사"]
 ```
