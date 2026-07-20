@@ -12,7 +12,10 @@ __pycache__/
 *.db-journal
 
 # Compiled / local skill assets & temp files
+# (.agents/ and .claude/ hold machine-generated skill symlinks — setup_symlinks.sh —
+#  and .claude/ may also carry local Claude Code settings, never for a public repo)
 .agents/
+.claude/
 media/
 cards/
 temp_card.json

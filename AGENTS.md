@@ -4,8 +4,8 @@ Agent-driven Anki card pipeline for advanced Japanese learners: generate → val
 persist to SQLite → TTS at push time → push via AnkiConnect → mirror to JSONL in a
 separate private data repo.
 
-Sessions in this repo serve **two different jobs**. This file only routes; read the
-document for your job and skip the other.
+Sessions in this repo serve **several different jobs**. This file only routes; read the
+document for your job and skip the others.
 
 ## Which instructions apply to you
 
@@ -14,8 +14,11 @@ document for your job and skip the other.
   `SKILL.md` rather than improvising.
 - **Legacy-deck work** — the user asks to promote weak legacy words, register/absorb a
   deck into the known-words registry, retire known words, or compress duplicates: this
-  is the `legacy_migration` skill's job. Invoke it and follow its `SKILL.md`. No other
-  doc in this repo is required reading for either of these two roles.
+  is the `legacy_migration` skill's job. Invoke it and follow its `SKILL.md`.
+- **Output practice** — the user wants Korean→Japanese 작문 (production) practice, a
+  topic-based session, or to drill their weak words: this is the `output_practice`
+  skill's job. Invoke it and follow its `SKILL.md`. No other doc in this repo is
+  required reading for these skill roles.
 - **Working on the codebase** — changing or extending the pipeline, tests, or docs:
   read **`docs/development.md` before modifying code**. It carries the commands, the
   layout, and the settled architectural invariants that must not be broken without an

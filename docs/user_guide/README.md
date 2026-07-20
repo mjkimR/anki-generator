@@ -40,7 +40,38 @@ asks whether to add a card for a different sense or skip.
 ./data/sync.sh
 ```
 
-## 2. Anki can stay closed
+## 2. Output practice (작문 연습) & discovering new words
+
+The second skill drills the **production** direction — you are given a Korean sentence and
+write the Japanese — and turns words you can't yet produce into new cards as you go. Just ask
+in Claude Code:
+
+- `작문 연습하자` / `약한 단어로 출력 연습` → **review mode**: it pulls your weakest words
+  (recent practice misses, high-lapse legacy words, retired words due for upkeep) and poses
+  fresh Korean sentences that force each one.
+- `비즈니스 협상 주제로 작문 연습` / `새로운 단어로 연습하고 싶어` → **topic mode**: it seeds a
+  themed session, weaving topic-relevant weak words together with fresh domain vocabulary.
+
+For each prompt you write the Japanese; the agent checks whether you used the target word
+(mechanically, via Janome) and grades naturalness/grammar, then gives feedback and logs the
+attempt. Two things happen automatically:
+
+- **Discovery → new cards.** Any word you couldn't produce — the target *or* another word in
+  the sentence — is treated as a newly discovered word and registered as a card (through the
+  normal card pipeline: deduped, validated, voiced). Practice **grows** your deck; it isn't
+  review-only, and sentences are *not* dumbed down to avoid hard words — that is the point.
+- **Confusion capture.** If you reach for the wrong word out of a genuine mix-up, that pair is
+  recorded as a confusion group (`もてなす` ↔ `もたらす`) for later discrimination work. A valid
+  synonym is *not* treated as a confusion.
+
+Everything is logged to the local DB and mirrored to `data/`, so **close the session with the
+same backup commit** (`./data/sync.sh`). You can also steer it in plain words at any time:
+`ぎっしり랑 びっしり 헷갈려` → the agent records the group; `이제 안 헷갈려` → the group is
+closed (it re-opens as a fresh group if the mix-up recurs); `이 단어는 그만 나와도 돼` → the
+word stops surfacing in practice until it actually fails again; `요즘 정답률 어때?` → the
+agent reads `practice stats` back to you.
+
+## 3. Anki can stay closed
 
 Anki being closed is not an error. Cards are safely persisted in the DB as pending, and
 **the next time you make cards with Anki open, the backlog is pushed automatically along
@@ -54,7 +85,7 @@ uv run anki-gen sync-pending
 On an `ANKI_ENABLED=0` (generation-only) machine, committing & pushing `data/` *is* the
 wrap-up — an Anki-equipped machine picks the cards up from there after a pull.
 
-## 3. Backup & multiple machines
+## 4. Backup & multiple machines
 
 - **Backup = commit & push inside `data/`.** Card data never enters the code repo
   (gitignore blocks it).
@@ -63,9 +94,10 @@ wrap-up — an Anki-equipped machine picks the cards up from there after a pull.
   command. The Anki collection itself travels via AnkiWeb.
 - **Only one rule to remember**: on a new Anki machine, **sync AnkiWeb before the first
   push.** (If the note model gets created independently on both sides, a full one-way
-  upload/download is forced — see `../architecture.md` → *Multiple Machines*.)
+  upload/download is forced — see `../architecture/data-and-sync.md` →
+  *Multi-machine discipline*.)
 
-## 4. Legacy deck work (promotion sessions)
+## 5. Legacy deck work (promotion sessions)
 
 Promoting weak words from the old decks into fresh cards is also driven by talking to
 the agent — it follows the legacy-migration playbook:
@@ -80,7 +112,7 @@ the agent — it follows the legacy-migration playbook:
 
 Legacy work also ends the same way: commit & push `data/`.
 
-## 5. Command cheatsheet
+## 6. Command cheatsheet
 
 Everything lives under the single `anki-gen` entry point (`uv run anki-gen --help` lists
 it all). An alias keeps it short (`~/.zshrc`):
@@ -96,6 +128,9 @@ alias akg='uv run anki-gen'
 | `akg backfill-audio` | Repair cards that synced silent (TTS failed) |
 | `akg sync-decks` | Re-run routing when Listening cards linger in the vocab deck |
 | `akg gc-media` | Delete mp3s no card references (occasionally) |
+| `akg practice weak-words` | What to practice next — your weakest words (uses live Anki stats when open, offline blend otherwise) |
+| `akg practice stats` | Practice report: correct rate, struggling words (`--word "単語(よみ)"` for one word's history) |
+| `akg practice list-confusions` | Review the captured confusable-word groups (`--all` includes resolved ones) |
 | `akg db check "単語"` | Does this word already have a card + was it known in the legacy decks |
 | `akg db pending` | List cards not yet pushed to Anki |
 | `akg db export` / `db import` | Manual DB↔JSONL mirror (doctor tells you the direction) |
@@ -104,10 +139,11 @@ alias akg='uv run anki-gen'
 | `akg legacy retire-word "単語"` | Manual "I simply know this word" retire |
 | `akg legacy retired-list` / `coverage` | Retirement ledger / example-sentence exposure (no Anki needed) |
 
-The rest (`run`, `snapshot`, `archive-duplicates`, …) are commands the agent runs for
-you mid-conversation — you'll rarely type them yourself.
+The rest (`run`, `snapshot`, `archive-duplicates`, `practice check`/`log`/`add-confusion`/
+`dismiss`/`resolve-confusion`, …) are commands the agent runs for you mid-conversation —
+you'll rarely type them yourself.
 
-## 6. Symptom → remedy
+## 7. Symptom → remedy
 
 | Symptom | Remedy |
 |---|---|
@@ -119,7 +155,7 @@ you mid-conversation — you'll rarely type them yourself.
 | Worried a card pushed on another machine gets re-pushed here | It won't — sync state travels via git and merges monotonically, with Anki's duplicate detection as a second net |
 | Want to change the card design | Edit the CSS/HTML in `anki_model/` → auto-synced to Anki on the next push. Don't edit inside the Anki app (the repo version overwrites it on the next sync) |
 
-## 7. Things not to do
+## 8. Things not to do
 
 - **Committing card data into the code repo** — gitignore blocks it, but remember:
   `data/` commits always happen *inside* `data/`.

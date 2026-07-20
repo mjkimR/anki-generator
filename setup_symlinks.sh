@@ -8,9 +8,16 @@ echo "=== Anki-Generator Agent Skill Symlink Setup ==="
 
 SKILLS_SRC="src/anki_generator/skills"
 
-# Create .agents/skills directory
-echo "[1/2] Creating .agents/skills directory..."
-mkdir -p .agents/skills
+# One link root per agent CLI convention — both carry the same per-skill symlinks
+# into src/, so the skills have a single source of truth:
+#   .agents/skills — the open agent-skills layout (Gemini CLI & friends)
+#   .claude/skills — where Claude Code discovers project skills
+DEST_ROOTS=(".agents/skills" ".claude/skills")
+
+echo "[1/2] Creating skill link directories..."
+for root in "${DEST_ROOTS[@]}"; do
+    mkdir -p "$root"
+done
 
 # One symlink per skill — a skill is any directory under skills/ carrying a SKILL.md.
 # New skills are picked up automatically; no need to edit this script.
@@ -19,15 +26,17 @@ status=0
 for skill_md in "$SKILLS_SRC"/*/SKILL.md; do
     [ -f "$skill_md" ] || continue
     name="$(basename "$(dirname "$skill_md")")"
-    # -n: an existing symlink is replaced, not descended into — re-running would otherwise
-    # plant a self-referencing link inside the skill directory itself.
-    ln -sfn "../../$SKILLS_SRC/$name" ".agents/skills/$name"
-    if [ -L ".agents/skills/$name" ]; then
-        echo "  ✔ $name -> $(readlink ".agents/skills/$name")"
-    else
-        echo "  ❌ Failed to link $name"
-        status=1
-    fi
+    for root in "${DEST_ROOTS[@]}"; do
+        # -n: an existing symlink is replaced, not descended into — re-running would
+        # otherwise plant a self-referencing link inside the skill directory itself.
+        ln -sfn "../../$SKILLS_SRC/$name" "$root/$name"
+        if [ -L "$root/$name" ]; then
+            echo "  ✔ $root/$name -> $(readlink "$root/$name")"
+        else
+            echo "  ❌ Failed to link $root/$name"
+            status=1
+        fi
+    done
 done
 
 if [ "$status" -eq 0 ]; then

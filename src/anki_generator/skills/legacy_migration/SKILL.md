@@ -7,8 +7,9 @@ description: "Migrates the user's legacy Anki decks: promotes weak words (승격
 
 Read this when the user wants to work on the **legacy decks**: promote weak words
 (승격), absorb another deck into the known-words registry, or compress duplicate
-notes. Strategy and remaining plan: `docs/roadmap.md` → *Legacy Deck Migration*;
-shipped rounds and settled decisions: `docs/history.md`. All commands
+notes. Active migration outcomes live in `docs/roadmap.md`; the standing migration
+strategy is `docs/decisions/0008-shrink-first-legacy-migration.md`. Old measured rounds
+remain available through Git history. All commands
 below are `uv run anki-gen legacy ...`
 and print JSON; archive operations are reversible (suspend + tag `ankigen-retired`,
 never deletion).

@@ -33,7 +33,11 @@ or a full sentence, generate cards and drive the pipeline to completion.
 2. For each extracted target, check whether it is already registered (`db check` is the only
    helper you call directly during card generation — everything else goes through the
    driver; legacy-deck work is a separate skill, see `legacy_migration`):
-   * `uv run anki-gen db check "<word>"`
+   * `uv run anki-gen db check "<word>"` — prefer the full `基本形(よみ)` form when you
+     know the reading: kana-headword legacy entries (e.g. ためらう) match via the reading.
+     A bare kanji query falls back to a Janome-derived reading (echoed as
+     `known_legacy.reading_checked`); a legacy match found only that way can be a
+     homophone — weigh it, don't assert it.
 3. If the response reports `exists: true`, inspect `count` and `matches` (a polysemous word may
    already own several sense cards):
    * Ask the user whether to add a new card for a different sense, or skip this word.
@@ -76,6 +80,10 @@ Notes:
 * `warnings` (e.g. Yomigana mismatch from Janome) are informational only. Janome misses many
   N1/business words; never regenerate because of a warning — at most mention it in the final
   report.
+* `existing_cards` on a `need_korean` response: those root_ids already own other cards in
+  the DB. If Step 1 established this is a deliberate new sense, proceed; otherwise stop and
+  confirm with the user before filling Korean — a same-sense card with a new sentence would
+  insert as a silent duplicate.
 
 ### [Step 4] Korean Pass (Pass B — monolingual)
 Add to each listed card **only** these fields:
