@@ -79,7 +79,7 @@ def export_backup(db_path=None):
 
 def _tts_text(card):
     reading = card.get("back_reading", "")
-    return tts_helper.reading_to_kana(reading) if reading else card.get("front", "")
+    return reading if reading else card.get("front", "")
 
 def _ensure_local_audio(card, db_path=None):
     audio = card.get("audio_path", "")

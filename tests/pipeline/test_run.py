@@ -164,7 +164,7 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     archived = Path(result["archived_to"])
     assert archived.exists() and archived.parent.name == "done"
 
-def test_tts_receives_kana_reading_not_raw_kanji(tmp_path, monkeypatch):
+def test_tts_receives_annotated_reading_not_raw_kanji(tmp_path, monkeypatch):
     # The card states its own reading — TTS must speak that, never re-guess the
     # kanji (傷はじきに was misread as きず・はじき·に from raw text).
     db = str(tmp_path / "test.db")
@@ -181,7 +181,7 @@ def test_tts_receives_kana_reading_not_raw_kanji(tmp_path, monkeypatch):
     path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
     result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
     assert code == 0 and result["status"] == "done"
-    assert spoken == ["かれは だきょうを こばんだ。"]
+    assert spoken == ["彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。"]
 
 def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")

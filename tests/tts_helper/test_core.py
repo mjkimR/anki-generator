@@ -11,6 +11,7 @@ from anki_generator.tts_helper import (
     default_output_path,
     reading_to_kana,
     synthesize,
+    to_ssml,
 )
 
 def test_reading_to_kana_speaks_the_validated_reading():
@@ -67,3 +68,20 @@ def test_synthesize_uses_existing_file_as_cache(tmp_path):
     assert result["success"] is True
     assert result["cached"] is True
     assert result["output_path"] == str(cached)
+
+def test_to_ssml_converts_furigana_to_sub_alias():
+    raw = "彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。"
+    ssml = to_ssml(raw, "ja-JP-NanamiNeural")
+    assert '<voice name="ja-JP-NanamiNeural">' in ssml
+    assert '<sub alias="かれ">彼</sub>は <sub alias="けつだん">決断</sub>を <sub alias="ためら">躊躇</sub>った。' in ssml
+
+def test_to_ssml_escapes_xml_special_characters():
+    raw = "A & B <span style='color:blue'>C</span> 彼[かれ]は"
+    ssml = to_ssml(raw, "ja-JP-NanamiNeural")
+    assert "A &amp; B C <sub alias=\"かれ\">彼</sub>は" in ssml
+
+def test_to_ssml_unspaced_japanese_sentence_does_not_swallow_particles():
+    # Continuous Japanese without spaces between words must not swallow particles like 'は', 'を', 'に' into sub alias tags.
+    raw = "彼[かれ]は決断[けつだん]を下[くだ]した。"
+    ssml = to_ssml(raw, "ja-JP-NanamiNeural")
+    assert '<sub alias="かれ">彼</sub>は<sub alias="けつだん">決断</sub>を<sub alias="くだ">下</sub>した。' in ssml
