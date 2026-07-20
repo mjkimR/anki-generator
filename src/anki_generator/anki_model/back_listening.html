@@ -1,9 +1,10 @@
-<!-- Listening back: replay the audio (via FrontSide), then reveal the sentence with the
+<!-- Listening back: replay the audio, then reveal the sentence with the
      target highlight, the furigana reading, meaning, and tip. Shares the same fields and
      CSS classes as the vocab card's back so the look stays consistent. -->
 {{FrontSide}}
 <hr id="answer">
 <div class="sentence">{{Front}}</div>
 <div class="sentence reading">{{furigana:Reading}}</div>
+{{Audio}}
 {{#Meaning}}<div class="gloss meaning"><span class="label">뜻</span><span>{{Meaning}}</span></div>{{/Meaning}}
 {{#Tip}}<div class="gloss tip"><span class="label">Tip</span><span>{{Tip}}</span></div>{{/Tip}}

@@ -175,7 +175,9 @@ def test_tts_receives_annotated_reading_not_raw_kanji(tmp_path, monkeypatch):
 
     def fake_synth(text, output_path=None, voice=None):
         spoken.append(text)
-        return {"success": True, "output_path": "/nonexistent/tts_fake.mp3"}
+        out = tmp_path / "tts_fake.mp3"
+        out.touch()
+        return {"success": True, "output_path": str(out)}
     monkeypatch.setattr(pipeline.tts_helper, "synthesize", fake_synth)
 
     path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
