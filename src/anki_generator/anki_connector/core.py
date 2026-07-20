@@ -3,7 +3,7 @@ import json
 import base64
 from pathlib import Path
 
-from anki_generator.config import ANKI_CONNECT_URL, ANKI_NOTE_MODEL
+from anki_generator.config import ANKI_CONNECT_URL, ANKI_NOTE_MODEL, MEDIA_DIR
 from anki_generator.common import (
     coerce_cards, log, TARGET_MARKER_RE
 )
@@ -55,13 +55,16 @@ def _load_model_assets():
 
 def invoke(action, **params):
     """Helper function to invoke AnkiConnect API actions."""
-    # requests is only needed for actual Anki I/O. Keeping it out of module import
-    # avoids paying its startup cost for validation, DB, and help-only commands.
     import requests
 
-    payload = {"action": action, "version": 6, "params": params}
+    payload = {"action": action, "version": 6}
+    if params:
+        payload["params"] = params
+
+    session = requests.Session()
+    session.trust_env = False
     try:
-        response = requests.post(ANKI_CONNECT_URL, json=payload, timeout=5)
+        response = session.post(ANKI_CONNECT_URL, json=payload, timeout=5)
         response.raise_for_status()
         res_json = response.json()
         
@@ -116,13 +119,25 @@ def push_card(card, deck_name, model_name):
     yomigana (決断[けつだん]) as ruby text."""
     audio_path = card.get("audio_path", "")
 
-    # Sync audio media if present
+    # Sync audio media if present (audio_path may be bare filename or full path)
     audio_filename = ""
-    if audio_path and os.path.exists(audio_path):
-        try:
-            audio_filename = upload_audio_to_anki(audio_path)
-        except Exception as audio_err:
-            log(f"[Anki Warning] Failed to upload audio: {str(audio_err)}")
+    if audio_path:
+        full_path = Path(audio_path)
+        if not full_path.is_absolute() and not full_path.exists():
+            full_path = MEDIA_DIR / audio_path
+        if not full_path.exists():
+            from anki_generator import tts_helper
+            from anki_generator.pipeline.core import _tts_text
+            text = _tts_text(card)
+            tres = tts_helper.synthesize(text)
+            if tres.get("success"):
+                full_path = Path(tres["output_path"])
+                card["audio_path"] = full_path.name
+        if full_path.exists():
+            try:
+                audio_filename = upload_audio_to_anki(full_path)
+            except Exception as audio_err:
+                log(f"[Anki Warning] Failed to upload audio: {str(audio_err)}")
 
     note = {
         "deckName": deck_name,
@@ -268,7 +283,18 @@ def push_to_anki(card_json_path, deck_name):
             log(f"[Anki] Created new deck: {deck_name}")
 
         with open(card_json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw_content = f.read().strip()
+
+        is_jsonl = False
+        if raw_content.startswith("[") or raw_content.startswith("{"):
+            try:
+                data = json.loads(raw_content)
+            except json.JSONDecodeError:
+                data = [json.loads(line) for line in raw_content.splitlines() if line.strip()]
+                is_jsonl = True
+        else:
+            data = [json.loads(line) for line in raw_content.splitlines() if line.strip()]
+            is_jsonl = True
 
         cards = coerce_cards(data)
     except Exception as e:
@@ -296,11 +322,15 @@ def push_to_anki(card_json_path, deck_name):
                 "error": str(card_err)
             })
 
-    # Always save updated sync flags back to JSON, even after partial failures,
+    # Always save updated sync flags back to JSON/JSONL, even after partial failures,
     # so the orchestrator / DB insert see which cards actually made it into Anki.
     try:
         with open(card_json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            if is_jsonl:
+                for card in data:
+                    f.write(json.dumps(card, ensure_ascii=False) + "\n")
+            else:
+                json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as write_err:
         card_errors.append({"error": f"Failed to write sync flags back to JSON: {str(write_err)}"})
 

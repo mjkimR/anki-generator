@@ -12,8 +12,54 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Database path (Source of Truth)
 DB_PATH = PROJECT_ROOT / "anki_generator.db"
 
+def resolve_anki_connect_url() -> str:
+    url = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
+    is_localhost = "localhost" in url or "127.0.0.1" in url
+
+    import socket
+    import struct
+    import urllib.request
+
+    # Check if the configured URL is directly reachable
+    try:
+        req = urllib.request.Request(
+            url,
+            data=b'{"action":"version","version":6}',
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=0.3):
+            return url
+    except Exception:
+        pass
+
+    # If configured URL is localhost (or unset) and failed, attempt WSL gateway IP resolution
+    if is_localhost:
+        try:
+            with open("/proc/net/route", "r", encoding="utf-8") as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if len(fields) >= 3 and fields[1] == "00000000":
+                        hex_ip = fields[2]
+                        gateway_ip = socket.inet_ntoa(struct.pack("<L", int(hex_ip, 16)))
+                        test_url = f"http://{gateway_ip}:8765"
+                        try:
+                            req = urllib.request.Request(
+                                test_url,
+                                data=b'{"action":"version","version":6}',
+                                headers={"Content-Type": "application/json"},
+                            )
+                            with urllib.request.urlopen(req, timeout=0.3):
+                                return test_url
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    return url
+
+
 # AnkiConnect configuration
-ANKI_CONNECT_URL = os.getenv("ANKI_CONNECT_URL", "http://localhost:8765")
+ANKI_CONNECT_URL = resolve_anki_connect_url()
 ANKI_DEFAULT_DECK = os.getenv("ANKI_DEFAULT_DECK", "Japanese::Vocabulary")
 # Note model owned by this repo: created in Anki on first push and kept in sync with the
 # git-managed templates/CSS under src/anki_generator/anki_model/.
