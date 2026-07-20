@@ -11,6 +11,9 @@ class BackupResult(TypedDict, total=False):
     success: bool
     total_cards: int
     known_words: int
+    attempts: int
+    confusions: int
+    card_feedback: int
     written: list[str]
     unchanged: list[str]
     removed: list[str]
@@ -44,6 +47,7 @@ class CmdRunResponse(TypedDict, total=False):
     attempts_remaining: int
     normalized: list[NormalizationLog] | None
     cards_missing_korean: list[dict[str, Any]]
+    existing_cards: dict[str, int]   # root_id → other cards already in the DB (dedup hint)
 
 class CmdSyncPendingResponse(TypedDict, total=False):
     status: Literal["done", "partial", "error"]

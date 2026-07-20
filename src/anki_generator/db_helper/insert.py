@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 
 from anki_generator.common import coerce_cards
-from .core import get_connection, CARD_COLUMNS, REQUIRED_CARD_FIELDS
+from .core import CARD_COLUMNS, REQUIRED_CARD_FIELDS
+from .session import transaction
 
 _UPSERT_SQL = f"""
     INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
@@ -50,10 +51,8 @@ def _insert_cards(conn, cards):
     return inserted_count, skipped
 
 def insert_card_records(cards, db_path=None):
-    conn = get_connection(db_path)
-    inserted_count, skipped = _insert_cards(conn, cards)
-    conn.commit()
-    conn.close()
+    with transaction(db_path) as conn:
+        inserted_count, skipped = _insert_cards(conn, cards)
     result = {"success": True, "count": inserted_count}
     if skipped:
         result["skipped"] = skipped

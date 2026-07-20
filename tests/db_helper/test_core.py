@@ -11,13 +11,13 @@ sys.path.append(str(src_dir))
 from anki_generator import db_helper
 from anki_generator import config
 from anki_generator.db_helper import (
-    get_connection,
     insert_card_records,
     check_word,
     mark_synced,
     fetch_pending,
     split_legacy_back,
 )
+from tests.db_support import open_test_db
 
 def make_card(root_id, front, **overrides):
     card = {
@@ -32,7 +32,7 @@ def make_card(root_id, front, **overrides):
     return card
 
 def seed_known(db, rows):
-    conn = get_connection(db)
+    conn = open_test_db(db)
     for r in rows:
         conn.execute(
             "INSERT INTO known_words (kind, word, reading, meaning, source_deck,"
@@ -60,8 +60,11 @@ def test_check_word_reports_all_senses(tmp_path):
 def test_check_word_missing_db_returns_clean_result(tmp_path):
     # A fresh/absent DB must yield a clean negative result, not a raw traceback.
     result = check_word("承る", db_path=str(tmp_path / "fresh.db"))
-    assert result == {"success": True, "exists": False, "count": 0, "matches": [],
-                      "known_legacy": {"exists": False, "matches": []}}
+    known = result.pop("known_legacy")
+    assert result == {"success": True, "exists": False, "count": 0, "matches": []}
+    assert known["exists"] is False and known["matches"] == []
+    # the Janome-derived bridge key is surfaced even on a miss (informational)
+    assert known["reading_checked"] == "うけたまわる"
 
 def test_mark_synced_and_fetch_pending(tmp_path):
     db = str(tmp_path / "test.db")
@@ -81,7 +84,7 @@ def test_mark_synced_and_fetch_pending(tmp_path):
     assert len(pending) == 1
     assert pending[0]["root_id"] == "躊躇う(ためらう)"
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     note_id = conn.execute(
         "SELECT anki_note_id FROM cards WHERE front = '妥協を拒んだ。'").fetchone()[0]
     conn.close()
@@ -98,7 +101,7 @@ def test_audio_path_stored_as_bare_name_and_resolved(tmp_path, monkeypatch):
                    audio_path="/old/machine/media/tts_abc.mp3")],
         db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     stored = conn.execute("SELECT audio_path FROM cards").fetchone()[0]
     conn.close()
     assert stored == "tts_abc.mp3"
@@ -118,7 +121,7 @@ def test_refresh_card_lemmas_only_reextracts_changed_cards(tmp_path):
                   back_reading="妥協[だきょう]を 拒[こば]んだ。"),
     ], db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     assert db_helper.refresh_card_lemmas(conn) == 1
     assert db_helper.refresh_card_lemmas(conn) == 0  # hash unchanged → skipped
     lemmas = {row[0] for row in conn.execute("SELECT lemma FROM card_lemmas")}
@@ -157,7 +160,7 @@ def test_retired_metadata_migration_backfills_old_db(tmp_path):
     conn.commit()
     conn.close()
 
-    conn = get_connection(db)  # runs the migration
+    conn = open_test_db(db)  # runs the migration
     rows = {w: (at, r) for w, at, r in conn.execute(
         "SELECT word, retired_at, retired_reason FROM known_words")}
     conn.close()
@@ -192,9 +195,11 @@ def test_check_word_bridges_kana_headword_via_reading(tmp_path):
     seed_known(db, [{"word": "とがめる", "source_deck": "JLPT N1", "lapses": 7}])
 
     assert check_word("咎める(과める)".replace("과", "とが"), db_path=db)["known_legacy"]["exists"] is True
-    # A bare kanji query carries no reading to bridge with (known limitation;
-    # retire-promoted's reading tier catches the pair after the card is pushed).
-    assert check_word("咎める", db_path=db)["known_legacy"]["exists"] is False
+    # A bare kanji query derives its reading via Janome and bridges too; the guess is
+    # surfaced as reading_checked so the agent can weigh a possible homophone match.
+    bare = check_word("咎める", db_path=db)["known_legacy"]
+    assert bare["exists"] is True
+    assert bare["reading_checked"] == "とがめる"
 
 def test_norm_key_backfilled_for_raw_rows(tmp_path):
     # Rows born without a norm_key (pre-migration DBs, raw inserts) get the derived
@@ -202,7 +207,7 @@ def test_norm_key_backfilled_for_raw_rows(tmp_path):
     db = str(tmp_path / "test.db")
     seed_known(db, [{"word": "妥協", "reading": "だきょう", "source_deck": "S"}])
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     key = conn.execute("SELECT norm_key FROM known_words").fetchone()[0]
     conn.close()
     assert key == "妥協(だきょう)"
@@ -212,12 +217,13 @@ def test_norm_keys_rebuilt_when_normalizer_rules_change(tmp_path):
     # (version bump) every cached key is rebuilt from the code, not trusted as data.
     db = str(tmp_path / "test.db")
     seed_known(db, [{"word": "妥協", "reading": "だきょう", "source_deck": "S"}])
-    conn = get_connection(db)
+    conn = open_test_db(db)
     conn.execute("UPDATE known_words SET norm_key = '옛규칙키'")
     db_helper.core.set_meta(conn, "norm_version", "0")  # as if written by older rules
+    conn.commit()
     conn.close()
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     key = conn.execute("SELECT norm_key FROM known_words").fetchone()[0]
     version = db_helper.core.get_meta(conn, "norm_version")
     conn.close()
@@ -255,7 +261,7 @@ def test_oldest_schema_migration(tmp_path):
     conn.commit()
     conn.close()
 
-    conn = get_connection(db)  # triggers migration
+    conn = open_test_db(db)  # triggers migration
     columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
     row = conn.execute("SELECT root_id, back_reading, back_meaning, back_tip FROM cards").fetchone()
     conn.close()
@@ -264,7 +270,7 @@ def test_oldest_schema_migration(tmp_path):
 
     # And a second sense can now be added
     insert_card_records([make_card("妥協(だきょう)", "another sense front")], db_path=db)
-    conn = get_connection(db)
+    conn = open_test_db(db)
     count = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     conn.close()
     assert count == 2
@@ -291,7 +297,7 @@ def test_intermediate_schema_migration(tmp_path):
     conn.commit()
     conn.close()
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     row = conn.execute(
         "SELECT back_reading, back_meaning, back_tip, synced_to_anki FROM cards"
     ).fetchone()
@@ -313,7 +319,7 @@ def test_fresh_default_db_auto_restores_from_partitions(tmp_path, monkeypatch):
     assert result["exists"] is True
     assert result["count"] == 1
 
-def test_get_connection_reconciles_when_partitions_change(tmp_path, monkeypatch):
+def test_open_test_db_reconciles_when_partitions_change(tmp_path, monkeypatch):
     # Not just fresh clones: a git pull that grows data/ must reach the existing DB on
     # the next touch, or --check would keep reporting pulled words as new.
     data_dir = tmp_path / "data"

@@ -4,13 +4,17 @@ from pathlib import Path
 from anki_generator import config
 
 from .core import (
-    get_connection, CARD_COLUMNS,
-    KNOWN_MIRROR_COLUMNS, set_meta,
+    CARD_COLUMNS,
+    KNOWN_MIRROR_COLUMNS, _set_meta,
     _row_to_card, _reconcile_cards,
     _reconcile_known_words, _read_known_words,
-    _partitions_fingerprint, _read_partition_cards)
+    _partitions_fingerprint, _read_partition_cards,
+    ATTEMPTS_MIRROR_COLUMNS, CONFUSIONS_MIRROR_COLUMNS, CARD_FEEDBACK_MIRROR_COLUMNS,
+    _reconcile_attempts, _reconcile_confusions, _reconcile_card_feedback,
+    _read_attempts, _read_confusions, _read_card_feedback)
 
 from .insert import insert_card_records  # noqa: E402
+from .session import transaction
 
 def _write_mirror_dir(directory, glob_pattern, partitions, written, unchanged, removed):
     directory.mkdir(parents=True, exist_ok=True)
@@ -29,11 +33,66 @@ def _write_mirror_dir(directory, glob_pattern, partitions, written, unchanged, r
             stale.unlink()
             removed.append(stale.name)
 
+def _mirror_records(rows, columns):
+    """Rows → mirror dicts, dropping None values (minimal, diff-stable JSONL) exactly as
+    the known_words export does. Column order is fixed; sort_keys at write time makes the
+    on-disk key order deterministic regardless."""
+    return [{k: v for k, v in zip(columns, row) if v is not None} for row in rows]
+
+def _practice_partitions(conn):
+    """The attempts / confusions / card_feedback partition dicts + their row counts, shared
+    by the full export and the lightweight practice-only export. Orders are content-derived
+    so the mirror is byte-identical across machines."""
+    attempts_rows = conn.execute(
+        f"SELECT {', '.join(ATTEMPTS_MIRROR_COLUMNS)} FROM attempts"
+        " ORDER BY created_at, root_id, prompt_ko, user_answer, verdict, uuid"
+    ).fetchall()
+    attempts_partitions = {}  # daily partitions by created_at day (append-only log)
+    for record in _mirror_records(attempts_rows, ATTEMPTS_MIRROR_COLUMNS):
+        day = (record.get("created_at") or "")[:10] or "unknown"
+        attempts_partitions.setdefault(f"attempts-{day}.jsonl", []).append(record)
+
+    confusion_rows = conn.execute(
+        f"SELECT {', '.join(CONFUSIONS_MIRROR_COLUMNS)} FROM confusions"
+        " ORDER BY group_id, word"
+    ).fetchall()
+    confusion_records = _mirror_records(confusion_rows, CONFUSIONS_MIRROR_COLUMNS)
+
+    feedback_rows = conn.execute(
+        f"SELECT {', '.join(CARD_FEEDBACK_MIRROR_COLUMNS)} FROM card_feedback"
+        " ORDER BY created_at, root_id, category"
+    ).fetchall()
+    feedback_records = _mirror_records(feedback_rows, CARD_FEEDBACK_MIRROR_COLUMNS)
+    return {
+        "attempts": attempts_partitions,
+        "confusions": {"confusions.jsonl": confusion_records} if confusion_records else {},
+        "card_feedback": ({"card_feedback.jsonl": feedback_records}
+                          if feedback_records else {}),
+        "counts": (len(attempts_rows), len(confusion_rows), len(feedback_rows)),
+    }
+
+def _write_practice_mirrors(data_dir, parts, written, unchanged, removed):
+    _write_mirror_dir(config.get_data_attempts_dir(data_dir), "attempts-*.jsonl",
+                      parts["attempts"], written, unchanged, removed)
+    _write_mirror_dir(config.get_data_confusions_dir(data_dir), "confusions*.jsonl",
+                      parts["confusions"], written, unchanged, removed)
+    _write_mirror_dir(config.get_data_card_feedback_dir(data_dir), "card_feedback*.jsonl",
+                      parts["card_feedback"], written, unchanged, removed)
+
 def export_cards(data_dir=None, db_path=None):
     data_dir = Path(data_dir or config.DATA_DIR)
-    conn = get_connection(db_path)
+    with transaction(db_path) as conn:
+        return _export_cards(conn, data_dir)
+
+
+def _export_cards(conn, data_dir):
+    # Merge-then-mirror for every table: fold in whatever the partitions hold before
+    # rewriting them, so a stale machine can never erase another's rows (the cards trap).
     _reconcile_cards(conn, _read_partition_cards(data_dir))
     _reconcile_known_words(conn, _read_known_words(data_dir))
+    _reconcile_attempts(conn, _read_attempts(data_dir))
+    _reconcile_confusions(conn, _read_confusions(data_dir))
+    _reconcile_card_feedback(conn, _read_card_feedback(data_dir))
     columns = list(CARD_COLUMNS) + ["created_at"]
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
@@ -55,18 +114,53 @@ def export_cards(data_dir=None, db_path=None):
         file_name = config.get_data_known_words_partition(record["source_deck"], data_dir).name
         known_partitions.setdefault(file_name, []).append(record)
 
+    practice = _practice_partitions(conn)
+
     written, unchanged, removed = [], [], []
     _write_mirror_dir(config.get_data_cards_dir(data_dir), "cards-*.jsonl",
                       card_partitions, written, unchanged, removed)
     _write_mirror_dir(config.get_data_known_words_dir(data_dir), "known_words*.jsonl",
                       known_partitions, written, unchanged, removed)
+    _write_practice_mirrors(data_dir, practice, written, unchanged, removed)
 
-    set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
-    conn.close()
+    _set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
 
+    attempts_n, confusions_n, feedback_n = practice["counts"]
     return {"success": True, "total_cards": len(rows), "known_words": len(known_rows),
+            "attempts": attempts_n, "confusions": confusions_n,
+            "card_feedback": feedback_n,
             "written": written, "unchanged": unchanged, "removed": removed,
             "data_dir": str(data_dir)}
+
+def export_practice_data(data_dir=None, db_path=None):
+    """The cheap per-write backup for the practice tables — reconciles + mirrors only
+    attempts/confusions/card_feedback, skipping the full cards + known_words reconcile a
+    complete `export_cards` would redo (the registry can be tens of thousands of rows, so
+    that redo cost ~140ms; the practice tables are tiny). Called after each `practice log`
+    / `add-confusion`; `export_cards` still covers these on any card-pipeline run.
+
+    Still merge-then-mirror for the practice tables: a partition pulled from another machine
+    is reconciled in *before* the re-mirror, so `_write_mirror_dir`'s stale-file cleanup can
+    never delete another machine's attempts. Runs after connection setup (which already
+    reconciled everything for the real DB), so refreshing the full fingerprint here only
+    ever folds in the practice files this call just wrote."""
+    data_dir = Path(data_dir or config.DATA_DIR)
+    with transaction(db_path) as conn:
+        return _export_practice_data(conn, data_dir)
+
+
+def _export_practice_data(conn, data_dir):
+    _reconcile_attempts(conn, _read_attempts(data_dir))
+    _reconcile_confusions(conn, _read_confusions(data_dir))
+    _reconcile_card_feedback(conn, _read_card_feedback(data_dir))
+    practice = _practice_partitions(conn)
+    written, unchanged, removed = [], [], []
+    _write_practice_mirrors(data_dir, practice, written, unchanged, removed)
+    _set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
+    attempts_n, confusions_n, feedback_n = practice["counts"]
+    return {"success": True, "attempts": attempts_n, "confusions": confusions_n,
+            "card_feedback": feedback_n, "written": written, "unchanged": unchanged,
+            "removed": removed, "data_dir": str(data_dir)}
 
 def import_cards_data(data_dir=None, db_path=None):
     cards_dir = config.get_data_cards_dir(data_dir)
@@ -88,3 +182,12 @@ def count_export_lines(data_dir=None):
 
 def count_known_lines(data_dir=None):
     return len(_read_known_words(data_dir or config.DATA_DIR))
+
+def count_attempts_lines(data_dir=None):
+    return len(_read_attempts(data_dir or config.DATA_DIR))
+
+def count_confusions_lines(data_dir=None):
+    return len(_read_confusions(data_dir or config.DATA_DIR))
+
+def count_card_feedback_lines(data_dir=None):
+    return len(_read_card_feedback(data_dir or config.DATA_DIR))

@@ -1,65 +1,20 @@
 import re
 import json
-import sqlite3
+import uuid
 import unicodedata
 import hashlib
 from typing import Any
 from pathlib import Path
 
 from anki_generator import config
-from anki_generator.common import log
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS cards (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    root_id TEXT NOT NULL,
-    front TEXT NOT NULL,
-    back_reading TEXT NOT NULL,   -- Japanese-only furigana sentence
-    back_meaning TEXT,            -- Korean meaning ([뜻])
-    back_tip TEXT,                -- Korean nuance tip ([Tip])
-    target_word TEXT NOT NULL,
-    pos TEXT NOT NULL,
-    components TEXT,       -- JSON array representation
-    collocations TEXT,     -- JSON array representation
-    is_hyogai INTEGER DEFAULT 0,
-    tags TEXT,             -- JSON array representation
-    audio_path TEXT,       -- bare file name under media/ (kept portable across machines)
-    anki_note_id INTEGER,  -- Anki note id captured at push time (NULL until synced)
-    synced_to_anki INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(root_id, front)
-);
-"""
-
-CARD_COLUMNS = ("root_id", "front", "back_reading", "back_meaning", "back_tip",
-                "target_word", "pos", "components", "collocations", "is_hyogai",
-                "tags", "audio_path", "anki_note_id", "synced_to_anki")
-
-REQUIRED_CARD_FIELDS = ("root_id", "front", "back_reading", "target_word", "pos")
-
-KNOWN_SCHEMA = """
-CREATE TABLE IF NOT EXISTS known_words (
-    kind TEXT NOT NULL,            -- 'word' | 'grammar'
-    word TEXT NOT NULL,            -- the expression itself for kind='grammar'
-    reading TEXT,
-    meaning TEXT,
-    source_deck TEXT NOT NULL,     -- short source label, e.g. 'JLPT N1'
-    status TEXT NOT NULL DEFAULT 'learned',  -- 'learned' | 'retired'
-    retired_at TIMESTAMP,          -- write-once: when the word left active study
-    retired_reason TEXT,           -- 'promoted' | 'manual' | 'retirement-pass'
-    lapses INTEGER DEFAULT 0,
-    ease REAL,                     -- DB-local (not mirrored)
-    ivl INTEGER,                   -- DB-local (not mirrored)
-    reps INTEGER,                  -- DB-local (not mirrored)
-    anki_note_id INTEGER,          -- NULL for grammar rows (they span many notes)
-    norm_key TEXT,                 -- derived root_id-shaped key (not mirrored, recomputable)
-    updated_at TIMESTAMP,
-    PRIMARY KEY (kind, word, source_deck)
-);
-"""
-
-KNOWN_MIRROR_COLUMNS = ("kind", "word", "reading", "meaning", "source_deck",
-                        "status", "lapses", "retired_at", "retired_reason")
+from .session import connection, transaction
+from .schema import (
+    SCHEMA, CARD_COLUMNS, REQUIRED_CARD_FIELDS,
+    KNOWN_SCHEMA, KNOWN_MIRROR_COLUMNS,
+    ATTEMPTS_SCHEMA, ATTEMPTS_MIRROR_COLUMNS,
+    CONFUSIONS_SCHEMA, CONFUSIONS_MIRROR_COLUMNS,
+    CARD_FEEDBACK_SCHEMA, CARD_FEEDBACK_MIRROR_COLUMNS,
+)
 
 KANJI_RE = re.compile(r"[一-鿿]")
 _FURIGANA_RE = re.compile(r"[^\s\[\]]+\[([^\]]+)\]")
@@ -99,8 +54,58 @@ def _ensure_norm_keys(conn):
             (normalize_known_word(word, reading), kind, word, source_deck))
     if rules_changed:
         set_meta(conn, "norm_version", _NORM_VERSION)
-    elif stale:
-        conn.commit()
+
+def _ensure_append_only_uuid(conn):
+    """attempts/card_feedback dropped their local autoincrement `id` (nothing joins to them)
+    for a device-independent `uuid` primary key. Any table still carrying an `id` column is
+    rebuilt without it — rows keep their uuid if they have one, else get a fresh one. Keyed
+    on the column being removed so it also cleans up an intermediate id+uuid layout. Empty in
+    practice (both tables are brand-new; card_feedback has no writer yet)."""
+    cursor = conn.cursor()
+    for table, schema in (("attempts", ATTEMPTS_SCHEMA),
+                          ("card_feedback", CARD_FEEDBACK_SCHEMA)):
+        cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table})")]
+        if "id" not in cols:
+            continue
+        rows = cursor.execute(f"SELECT {', '.join(cols)} FROM {table}").fetchall()
+        cursor.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+        cursor.execute(schema)
+        for row in rows:
+            record = dict(zip(cols, row))
+            record.pop("id", None)
+            record["uuid"] = record.get("uuid") or uuid.uuid4().hex
+            keys = list(record)
+            cursor.execute(
+                f"INSERT INTO {table} ({', '.join(keys)})"
+                f" VALUES ({', '.join(':' + k for k in keys)})", record)
+        cursor.execute(f"DROP TABLE {table}_old")
+
+def _ensure_confusions_resolved_at(conn):
+    """Additive migration: the resolution tombstone (deletion is deliberately not
+    implemented anywhere — archive semantics — so closing a confusion group is a
+    write-once resolved_at, monotonic across machines via the reconcile COALESCE)."""
+    cursor = conn.cursor()
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(confusions)")}
+    if columns and "resolved_at" not in columns:
+        cursor.execute("ALTER TABLE confusions ADD COLUMN resolved_at TIMESTAMP")
+
+def _ensure_confusions_group_id_text(conn):
+    cursor = conn.cursor()
+    col = next((r for r in cursor.execute("PRAGMA table_info(confusions)")
+                if r[1] == "group_id"), None)
+    if col is None or (col[2] or "").upper() == "TEXT":
+        return
+    # group_id was INTEGER (locally-assigned MAX+1, which collided across machines — two
+    # devices both minting group 1 for unrelated words). Move it to a device-independent
+    # TEXT id (UUIDs going forward). The table has no consumer yet so it is empty in
+    # practice; any local rows are carried over with the id cast so their grouping survives.
+    cursor.execute("ALTER TABLE confusions RENAME TO confusions_old")
+    cursor.execute(CONFUSIONS_SCHEMA)
+    cursor.execute(
+        "INSERT INTO confusions (group_id, word, root_id, note, source, created_at)"
+        " SELECT CAST(group_id AS TEXT), word, root_id, note, source, created_at"
+        " FROM confusions_old")
+    cursor.execute("DROP TABLE confusions_old")
 
 def _ensure_retired_columns(conn):
     cursor = conn.cursor()
@@ -121,7 +126,6 @@ def _ensure_retired_columns(conn):
                            OR c.root_id LIKE known_words.norm_key || '(%')
                 ) THEN 'promoted' ELSE 'manual' END
             WHERE status = 'retired'""")
-    conn.commit()
 
 def split_legacy_back(back):
     def trim(s):
@@ -140,19 +144,25 @@ def ensure_schema(conn):
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     cursor.execute(KNOWN_SCHEMA)
+    # Practice-data tables are plain CREATE IF NOT EXISTS (no migration history yet), and
+    # must exist regardless of which cards-table branch below returns early.
+    cursor.execute(ATTEMPTS_SCHEMA)
+    cursor.execute(CONFUSIONS_SCHEMA)
+    cursor.execute(CARD_FEEDBACK_SCHEMA)
+    _ensure_confusions_group_id_text(conn)
+    _ensure_confusions_resolved_at(conn)
+    _ensure_append_only_uuid(conn)
     _ensure_norm_keys(conn)
     _ensure_retired_columns(conn)
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'")
     if not cursor.fetchone():
         cursor.execute(SCHEMA)
-        conn.commit()
         return
 
     columns = {row[1] for row in cursor.execute("PRAGMA table_info(cards)")}
     if "id" in columns and "back_reading" in columns:
         if "anki_note_id" not in columns:
             cursor.execute("ALTER TABLE cards ADD COLUMN anki_note_id INTEGER")
-            conn.commit()
         return
 
     legacy_cols = [row[1] for row in cursor.execute("PRAGMA table_info(cards)")]
@@ -173,70 +183,95 @@ def ensure_schema(conn):
             record,
         )
     cursor.execute("DROP TABLE cards_legacy")
-    conn.commit()
-
-def get_connection(db_path=None):
-    target = Path(db_path) if db_path else config.DB_PATH
-    conn = sqlite3.connect(target)
-    ensure_schema(conn)
-    if db_path is None:
-        fingerprint = _partitions_fingerprint(config.DATA_DIR)
-        if fingerprint != get_meta(conn, "partitions_fingerprint"):
-            merged = _reconcile_cards(conn, _read_partition_cards(config.DATA_DIR))
-            merged_known = _reconcile_known_words(conn, _read_known_words(config.DATA_DIR))
-            set_meta(conn, "partitions_fingerprint", fingerprint)
-            if merged or merged_known:
-                log(f"[DB] Reconciled {merged} cards + {merged_known} known words"
-                    f" from {config.DATA_DIR}")
-    return conn
 
 def _mirror_files(data_dir):
     files = list(config.get_data_cards_dir(data_dir).glob("cards-*.jsonl"))
     files.extend(config.get_data_known_words_files(data_dir))
+    files.extend(config.get_data_attempts_dir(data_dir).glob("attempts-*.jsonl"))
+    files.extend(config.get_data_confusions_dir(data_dir).glob("confusions*.jsonl"))
+    files.extend(config.get_data_card_feedback_dir(data_dir).glob("card_feedback*.jsonl"))
     return sorted(files)
 
 def get_meta(conn, key):
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row[0] if row else None
 
-def set_meta(conn, key, value):
+def _set_meta(conn, key, value):
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?, ?)"
         " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, value),
     )
-    conn.commit()
+
+
+def set_meta(conn, key, value):
+    """Write metadata on the caller-owned transaction."""
+    _set_meta(conn, key, value)
 
 def init_db(db_path=None):
-    conn = get_connection(db_path)
-    conn.close()
+    with connection(db_path):
+        pass
     return {"success": True, "db_path": str(db_path or config.DB_PATH)}
 
+def _derive_reading(word):
+    """Hiragana reading via Janome, None when any token is unknown. Bridges a kanji query
+    (躊躇う) to kana registry headwords (ためらう) that plain key matching would miss —
+    additive only, so a wrong Janome guess just fails to match, never blocks."""
+    try:
+        from janome.tokenizer import Tokenizer
+        tokens: Any = Tokenizer().tokenize(word)  # typed str|Token; reading is on Token
+        readings = [t.reading for t in tokens]
+    except Exception:
+        return None
+    if not readings or "*" in readings:
+        return None
+    return "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch
+                   for ch in "".join(readings))
+
 def check_word(word, db_path=None):
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    escaped = word.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-    cursor.execute(
-        r"SELECT root_id, front, back_reading, back_meaning FROM cards"
-        r" WHERE root_id = ? OR root_id LIKE ? ESCAPE '\' ORDER BY id",
-        (word, f"{escaped}(%"),
-    )
-    rows = cursor.fetchall()
+    with connection(db_path) as conn:
+        cursor = conn.cursor()
+        escaped = word.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+        cursor.execute(
+            r"SELECT root_id, front, back_reading, back_meaning FROM cards"
+            r" WHERE root_id = ? OR root_id LIKE ? ESCAPE '\' ORDER BY id",
+            (word, f"{escaped}(%"),
+        )
+        rows = cursor.fetchall()
 
-    m = re.match(r"^([^(]+)\(([^)]+)\)$", word.strip())
-    base, reading = m.groups() if m else (word.split("(")[0].strip(), None)
-    keys = {word, base, normalize_known_word(base, reading)}
-    if reading:
-        keys.add(reading)
-    placeholders = ", ".join("?" for _ in keys)
-    known_rows = cursor.execute(
-        f"SELECT kind, word, source_deck, status, lapses FROM known_words"
-        f" WHERE word IN ({placeholders}) OR norm_key IN ({placeholders})"
-        f" ORDER BY kind, source_deck",
-        sorted(keys) * 2,
-    ).fetchall()
-    conn.close()
+        m = re.match(r"^([^(]+)\(([^)]+)\)$", word.strip())
+        base, reading = m.groups() if m else (word.split("(")[0].strip(), None)
+        keys = {word, base, normalize_known_word(base, reading)}
+        if reading:
+            keys.add(reading)
+        derived = None
+        if not reading and KANJI_RE.search(base):
+            # No reading given for a kanji word — derive one so kana-headword registry rows
+            # (word stored as ためらう, no norm_key reading) still register as known_legacy.
+            derived = _derive_reading(base)
+            if derived and derived != base:
+                keys.add(derived)
+                keys.add(normalize_known_word(base, derived))
+        placeholders = ", ".join("?" for _ in keys)
+        known_rows = cursor.execute(
+            f"SELECT kind, word, source_deck, status, lapses FROM known_words"
+            f" WHERE word IN ({placeholders}) OR norm_key IN ({placeholders})"
+            f" ORDER BY kind, source_deck",
+            sorted(keys) * 2,
+        ).fetchall()
 
+    known_legacy = {
+        "exists": bool(known_rows),
+        "matches": [
+            {"kind": r[0], "word": r[1], "source_deck": r[2], "status": r[3],
+             "lapses": r[4]}
+            for r in known_rows
+        ],
+    }
+    if derived:
+        # Surface the guess: a kana match found through it may be a homophone, so the
+        # agent can weigh it (informational, same rule as reading-only coverage matches).
+        known_legacy["reading_checked"] = derived
     return {
         "success": True,
         "exists": bool(rows),
@@ -245,39 +280,46 @@ def check_word(word, db_path=None):
             {"root_id": r[0], "front": r[1], "back_reading": r[2], "back_meaning": r[3]}
             for r in rows
         ],
-        "known_legacy": {
-            "exists": bool(known_rows),
-            "matches": [
-                {"kind": r[0], "word": r[1], "source_deck": r[2], "status": r[3],
-                 "lapses": r[4]}
-                for r in known_rows
-            ],
-        },
+        "known_legacy": known_legacy,
     }
 
+def count_other_senses(cards, db_path=None):
+    """{root_id: n} of DB cards under the same root_id whose front is NOT in the given
+    working set — the duplicate-sense safety net the run driver surfaces at the Pass-A
+    boundary (dedup itself stays the agent's Step-1 job; this catches a skipped check)."""
+    pairs = [(c.get("root_id"), c.get("front")) for c in cards if c.get("root_id")]
+    if not pairs:
+        return {}
+    out = {}
+    with connection(db_path) as conn:
+        for root_id in dict.fromkeys(r for r, _ in pairs):
+            fronts = [f for r, f in pairs if r == root_id and f]
+            not_in = (f" AND front NOT IN ({', '.join('?' for _ in fronts)})"
+                      if fronts else "")
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM cards WHERE root_id = ?{not_in}",
+                [root_id, *fronts]).fetchone()[0]
+            if n:
+                out[root_id] = n
+    return out
+
 def mark_synced(root_id, front, note_id=None, db_path=None):
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE cards SET synced_to_anki = 1, anki_note_id = COALESCE(?, anki_note_id)"
-        " WHERE root_id = ? AND front = ?",
-        (note_id, root_id, front),
-    )
-    conn.commit()
-    updated = cursor.rowcount > 0
-    conn.close()
+    with transaction(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE cards SET synced_to_anki = 1, anki_note_id = COALESCE(?, anki_note_id)"
+            " WHERE root_id = ? AND front = ?",
+            (note_id, root_id, front),
+        )
+        updated = cursor.rowcount > 0
     return updated
 
 def set_audio_path(root_id, front, audio_path, db_path=None):
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE cards SET audio_path = ? WHERE root_id = ? AND front = ?",
-        (Path(audio_path).name if audio_path else "", root_id, front),
-    )
-    conn.commit()
-    updated = cursor.rowcount > 0
-    conn.close()
+    with transaction(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE cards SET audio_path = ? WHERE root_id = ? AND front = ?",
+            (Path(audio_path).name if audio_path else "", root_id, front),
+        )
+        updated = cursor.rowcount > 0
     return updated
 
 def _row_to_card(row, columns):
@@ -290,13 +332,11 @@ def _row_to_card(row, columns):
     return card
 
 def fetch_pending(db_path=None):
-    conn = get_connection(db_path)
-    cursor = conn.cursor()
     columns = list(CARD_COLUMNS)
-    rows = cursor.execute(
-        f"SELECT {', '.join(columns)} FROM cards WHERE synced_to_anki = 0 ORDER BY id"
-    ).fetchall()
-    conn.close()
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(columns)} FROM cards WHERE synced_to_anki = 0 ORDER BY id"
+        ).fetchall()
     cards = [_row_to_card(row, columns) for row in rows]
     for card in cards:
         audio = card.get("audio_path")
@@ -305,13 +345,12 @@ def fetch_pending(db_path=None):
     return cards
 
 def fetch_missing_audio(db_path=None):
-    conn = get_connection(db_path)
     columns = list(CARD_COLUMNS)
-    rows = conn.execute(
-        f"SELECT {', '.join(columns)} FROM cards"
-        " WHERE audio_path IS NULL OR audio_path = '' ORDER BY id"
-    ).fetchall()
-    conn.close()
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(columns)} FROM cards"
+            " WHERE audio_path IS NULL OR audio_path = '' ORDER BY id"
+        ).fetchall()
     return [_row_to_card(row, columns) for row in rows]
 
 CARD_LEMMAS_SCHEMA = """
@@ -368,8 +407,6 @@ def refresh_card_lemmas(conn):
                     " VALUES (?, ?, ?, ?)", (card_id, lemma, count, src_hash))
     for card_id in orphans:
         cursor.execute("DELETE FROM card_lemmas WHERE card_id = ?", (card_id,))
-    if stale or orphans:
-        conn.commit()
     return len(stale)
 
 # --- Backup reconciliation and JSONL mirror sync helpers ---
@@ -413,7 +450,6 @@ def _reconcile_cards(conn, cards):
             ),
         )
         merged += 1
-    conn.commit()
     return merged
 
 _RECONCILE_KNOWN_SQL = f"""
@@ -449,7 +485,6 @@ def _reconcile_known_words(conn, rows):
         values.append(normalize_known_word(row["word"], row.get("reading")))
         cursor.execute(_RECONCILE_KNOWN_SQL, tuple(values))
         merged += 1
-    conn.commit()
     return merged
 
 def _read_known_words(data_dir):
@@ -473,3 +508,103 @@ def _read_partition_cards(data_dir):
             if line:
                 cards.append(json.loads(line))
     return cards
+
+# --- Practice-data reconcile + read helpers ---
+# attempts / card_feedback are append-only and keyed by a device-independent `uuid`: a mirror
+# row folds in via ON CONFLICT(uuid), so re-reading a partition is idempotent while genuinely
+# distinct rows stay apart. confusions key on (group_id, word), fill missing links/notes
+# without clobbering local ones, and normalize to one word per group.
+
+def _read_jsonl(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+def _read_attempts(data_dir):
+    rows = []
+    for path in sorted(config.get_data_attempts_dir(data_dir).glob("attempts-*.jsonl")):
+        rows.extend(_read_jsonl(path))
+    return rows
+
+def _read_confusions(data_dir):
+    return _read_jsonl(config.get_data_confusions_file(data_dir))
+
+def _read_card_feedback(data_dir):
+    return _read_jsonl(config.get_data_card_feedback_file(data_dir))
+
+def _reconcile_append_only(conn, table, columns, required, rows):
+    # `uuid` is the device-independent identity: ON CONFLICT(uuid) makes re-reading a
+    # partition idempotent while keeping genuinely distinct rows apart. A mirror row missing
+    # a uuid (legacy only — none exist) gets one minted so it still lands.
+    cursor = conn.cursor()
+    sql = (f"INSERT INTO {table} ({', '.join(columns)}) "
+           f"VALUES ({', '.join('?' for _ in columns)}) ON CONFLICT(uuid) DO NOTHING")
+    merged = 0
+    for row in rows:
+        # `is None` (not falsiness): NOT NULL is the real constraint — a dismiss marker
+        # legitimately carries an empty prompt/answer and must survive the round-trip.
+        if any(row.get(f) is None for f in required):
+            continue
+        row = {**row, "uuid": row.get("uuid") or uuid.uuid4().hex}
+        cursor.execute(sql, tuple(row.get(c) for c in columns))
+        merged += 1
+    return merged
+
+def _reconcile_attempts(conn, rows):
+    return _reconcile_append_only(
+        conn, "attempts", ATTEMPTS_MIRROR_COLUMNS,
+        ("root_id", "prompt_ko", "user_answer", "verdict"), rows)
+
+def _reconcile_card_feedback(conn, rows):
+    return _reconcile_append_only(
+        conn, "card_feedback", CARD_FEEDBACK_MIRROR_COLUMNS,
+        ("root_id", "category"), rows)
+
+_RECONCILE_CONFUSIONS_SQL = f"""
+    INSERT INTO confusions ({', '.join(CONFUSIONS_MIRROR_COLUMNS)})
+    VALUES ({', '.join('?' for _ in CONFUSIONS_MIRROR_COLUMNS)})
+    ON CONFLICT(group_id, word) DO UPDATE SET
+        root_id = COALESCE(confusions.root_id, excluded.root_id),
+        note = COALESCE(confusions.note, excluded.note),
+        resolved_at = COALESCE(confusions.resolved_at, excluded.resolved_at)
+"""
+
+def _normalize_confusion_groups(conn):
+    """Enforce the one-word-one-group invariant: any two groups that share a member are the
+    same confusion cluster, so union them (lowest group_id wins). Runs after the additive
+    reconcile so an in-place merge survives the JSONL round-trip (the stale mirror briefly
+    resurrects the pre-merge rows) and two machines' groups that share a word fuse instead of
+    double-booking it — the multi-machine completion of the local merge in _capture_confusion."""
+    cursor = conn.cursor()
+    changed = False
+    while True:
+        # Active rows only: a resolved group is a closed chapter — a fresh group reusing
+        # one of its words is a recurrence, not a double-booking to be unioned away.
+        row = cursor.execute(
+            "SELECT word FROM confusions WHERE resolved_at IS NULL GROUP BY word"
+            " HAVING COUNT(DISTINCT group_id) > 1 LIMIT 1").fetchone()
+        if not row:
+            break
+        groups = [r[0] for r in cursor.execute(
+            "SELECT DISTINCT group_id FROM confusions"
+            " WHERE word = ? AND resolved_at IS NULL ORDER BY group_id",
+            (row[0],))]
+        keep, drop = groups[0], groups[1:]
+        cursor.execute(
+            f"UPDATE OR REPLACE confusions SET group_id = ?"
+            f" WHERE group_id IN ({','.join('?' for _ in drop)})", [keep, *drop])
+        changed = True
+    return changed
+
+def _reconcile_confusions(conn, rows):
+    cursor = conn.cursor()
+    merged = 0
+    for row in rows:
+        if row.get("group_id") is None or not row.get("word") or not row.get("source"):
+            continue
+        cursor.execute(_RECONCILE_CONFUSIONS_SQL,
+                       tuple(row.get(c) for c in CONFUSIONS_MIRROR_COLUMNS))
+        merged += 1
+    _normalize_confusion_groups(conn)
+    return merged

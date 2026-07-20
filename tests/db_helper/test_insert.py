@@ -8,10 +8,10 @@ src_dir = test_file.parents[2] / "src"
 sys.path.append(str(src_dir))
 
 from anki_generator.db_helper import (
-    get_connection,
     insert_cards,
     insert_card_records,
 )
+from tests.db_support import open_test_db
 
 def make_card(root_id, front, **overrides):
     card = {
@@ -41,7 +41,7 @@ def test_polysemy_senses_coexist(tmp_path):
     result = insert_cards(write_cards(tmp_path, cards), db_path=db)
     assert result["success"] and result["count"] == 2
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     count = conn.execute("SELECT COUNT(*) FROM cards WHERE root_id = '見る(みる)'").fetchone()[0]
     conn.close()
     assert count == 2
@@ -53,7 +53,7 @@ def test_reinsert_same_sense_replaces(tmp_path):
     insert_cards(write_cards(tmp_path, [card], "a.json"), db_path=db)
     insert_cards(write_cards(tmp_path, [card], "b.json"), db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     count = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     conn.close()
     assert count == 1
@@ -78,7 +78,7 @@ def test_reinsert_without_timestamp_keeps_created_at(tmp_path):
         [make_card("妥協(だきょう)", "妥協を拒んだ。", back_tip="새 팁")],  # no created_at
         db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     row = conn.execute("SELECT created_at, back_tip FROM cards").fetchone()
     conn.close()
     assert row == ("2026-06-15 10:00:00", "새 팁")

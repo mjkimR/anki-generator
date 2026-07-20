@@ -9,7 +9,6 @@ sys.path.append(str(src_dir))
 
 from anki_generator import config
 from anki_generator.db_helper import (
-    get_connection,
     insert_card_records,
     check_word,
     fetch_pending,
@@ -17,6 +16,7 @@ from anki_generator.db_helper import (
     import_cards_data,
     count_export_lines,
 )
+from tests.db_support import open_test_db
 
 def make_card(root_id, front, **overrides):
     card = {
@@ -31,7 +31,7 @@ def make_card(root_id, front, **overrides):
     return card
 
 def seed_known(db, rows):
-    conn = get_connection(db)
+    conn = open_test_db(db)
     for r in rows:
         conn.execute(
             "INSERT INTO known_words (kind, word, reading, meaning, source_deck,"
@@ -87,7 +87,7 @@ def test_reconcile_merges_sync_state_monotonically(tmp_path):
 
     export_cards(data_dir=data_dir, db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     rows = {r[0]: r for r in conn.execute(
         "SELECT root_id, synced_to_anki, anki_note_id, audio_path, back_tip FROM cards")}
     conn.close()
@@ -135,7 +135,7 @@ def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
     assert match["source_deck"] == "JLPT N1" and match["lapses"] == 5
 
     # Only the stable fields travel — ease is DB-local and stays behind.
-    conn = get_connection(None)
+    conn = open_test_db(None)
     assert conn.execute(
         "SELECT ease FROM known_words WHERE word='大筋'").fetchone()[0] is None
     conn.close()
@@ -161,7 +161,7 @@ def test_known_words_reconcile_ratchets_status_and_lapses(tmp_path):
 
     export_cards(data_dir=data_dir, db_path=db)  # merge-then-mirror
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     rows = dict(
         (w, (s, lp)) for w, s, lp in conn.execute(
             "SELECT word, status, lapses FROM known_words"))
@@ -180,7 +180,7 @@ def test_known_words_reconcile_fills_retirement_metadata(tmp_path):
         {"word": "A", "source_deck": "S", "status": "retired"},  # metadata still NULL
         {"word": "B", "source_deck": "S", "status": "retired"},  # stamped locally
     ])
-    conn = get_connection(db)
+    conn = open_test_db(db)
     conn.execute("UPDATE known_words SET retired_at = '2026-07-01 00:00:00',"
                  " retired_reason = 'manual' WHERE word = 'B'")
     conn.commit()
@@ -197,7 +197,7 @@ def test_known_words_reconcile_fills_retirement_metadata(tmp_path):
 
     export_cards(data_dir=data_dir, db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     rows = {w: (at, r) for w, at, r in conn.execute(
         "SELECT word, retired_at, retired_reason FROM known_words")}
     conn.close()
@@ -257,7 +257,7 @@ def test_db_deletion_is_resurrected_by_export(tmp_path):
     ], db_path=db)
     export_cards(data_dir=data_dir, db_path=db)
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     conn.execute("DELETE FROM cards")
     conn.commit()
     conn.close()
@@ -295,9 +295,11 @@ def test_import_roundtrip_preserves_everything(tmp_path):
     result = import_cards_data(data_dir=data_dir, db_path=dst_db)
     assert result["success"] and result["count"] == 1
 
-    restored = get_connection(dst_db).execute(
+    conn = open_test_db(dst_db)
+    restored = conn.execute(
         "SELECT root_id, created_at, synced_to_anki, tags, back_tip FROM cards"
     ).fetchone()
+    conn.close()
     assert restored[0] == "妥協(だきょう)"
     assert restored[1] == "2026-06-15 10:00:00"  # created_at preserved, not re-stamped
     assert restored[2] == 1                       # sync flag preserved
@@ -306,7 +308,7 @@ def test_import_roundtrip_preserves_everything(tmp_path):
 
     # Idempotent: importing again changes nothing.
     import_cards_data(data_dir=data_dir, db_path=dst_db)
-    conn = get_connection(dst_db)
+    conn = open_test_db(dst_db)
     assert conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 1
     conn.close()
 

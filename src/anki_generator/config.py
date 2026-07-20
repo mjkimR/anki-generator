@@ -48,6 +48,7 @@ DATA_CARDS_SUBDIR = "cards"
 DATA_KNOWN_WORDS_SUBDIR = "known_words"
 DATA_ATTEMPTS_SUBDIR = "attempts"
 DATA_CONFUSIONS_SUBDIR = "confusions"
+DATA_CARD_FEEDBACK_SUBDIR = "card_feedback"
 
 def get_data_cards_dir(data_dir=None) -> Path:
     return Path(data_dir or DATA_DIR) / DATA_CARDS_SUBDIR
@@ -66,6 +67,29 @@ def get_data_known_words_files(data_dir=None) -> list:
     single known_words.jsonl if one is still around (read for migration, cleaned up
     by the next export)."""
     return sorted(get_data_known_words_dir(data_dir).glob("known_words*.jsonl"))
+
+# Practice-data mirrors (foundation for the output-practice + confusion skills). Same
+# determinism rules as cards/known_words: a JSONL mirror under data/ so git is the
+# backup layer, plus a doctor parity check per table. attempts partition by created_at
+# day (append-only log, so diffs are pure additions); confusions and card_feedback are
+# small and live in a single file each.
+def get_data_attempts_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_ATTEMPTS_SUBDIR
+
+def get_data_attempts_partition(day, data_dir=None) -> Path:
+    return get_data_attempts_dir(data_dir) / f"attempts-{day}.jsonl"
+
+def get_data_confusions_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_CONFUSIONS_SUBDIR
+
+def get_data_confusions_file(data_dir=None) -> Path:
+    return get_data_confusions_dir(data_dir) / "confusions.jsonl"
+
+def get_data_card_feedback_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_CARD_FEEDBACK_SUBDIR
+
+def get_data_card_feedback_file(data_dir=None) -> Path:
+    return get_data_card_feedback_dir(data_dir) / "card_feedback.jsonl"
 
 # Card working files: one JSON per target word under pending/, archived to done/
 # after the pipeline persists them (the DB is the source of truth from then on).
