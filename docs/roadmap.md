@@ -69,6 +69,21 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 - **Exit criteria:** batch extraction does not bypass validation, duplicate checks, or the
   existing working-file lifecycle.
 
+### Hyōgai kanji orthography policy and system-wide ID standards
+
+- **Problem:** Currently, `is_hyogai` is only a passive boolean flag (`true`/`false`) without an explicit orthography or ID standard. This causes several inconsistencies across card generation:
+  1. **ID and Deduplication ambiguity (`root_id`, `target_word`, `front`)**: For words using non-Jōyō kanji (e.g. `咎める`), one generation batch might use kanji (`咎める(とがめる)`, `気が咎めた`) while another uses hiragana (`とがめる(とがめる)`, `気がとがめた`). This fragments dictionary identity and breaks deduplication.
+  2. **Orthography conflict (Literary kanji vs. Modern practice)**: Real-world Japanese media often writes Hyōgai kanji in hiragana (e.g., `とがめる`, `うなずく`). However, learners aiming for advanced reading (N1+) still benefit from recognizing the rare kanji forms.
+  3. **Lack of visual feedback**: Anki notes do not receive automatic tags (`표외한자`) or visual badges on the card back to indicate non-Jōyō kanji status.
+- **Outcome:** Establish a unified orthography policy for `is_hyogai` cards that standardizes `root_id` identity, `front` example sentence generation, reading tip annotations, automatic Anki tagging, and visual card rendering.
+- **Exit criteria:**
+  1. **Standardize ID & Orthography Policy**: Define explicit schema rules for `root_id`, `target_word`, and `front`:
+     - Determine whether `root_id` strictly retains dictionary kanji `漢字(よみがな)` regardless of `front` surface representation.
+     - Settle whether `front` defaults to hiragana (following general usage) or kanji, and whether kanji recognition should be split into a separate tip/card or included in `back_tip`.
+  2. **Automated Anki Tagging**: `push_card` automatically appends the `표외한자` tag to Anki notes when `is_hyogai: true`.
+  3. **Visual Card Model Update**: Update `anki_model` (`back.html`, `style.css`) to render a clear visual `[표외한자]` badge on card backs.
+
+
 ## Later
 
 ### Card update and delete synchronization
