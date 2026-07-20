@@ -6,6 +6,7 @@ from anki_generator import (
 )
 from anki_generator.anki_connector.core import _chunked
 from anki_generator.common import log, generation_only_error
+from . import repository
 
 TAG_RE = re.compile(r"<[^>]+>")
 
@@ -107,7 +108,7 @@ def _record_sources(conn, specs):
             key: (list(value) if isinstance(value, tuple) else value)
             for key, value in spec.items() if key != "label"
         }
-    db_helper.set_meta(conn, "known_sources", json.dumps(stored, ensure_ascii=False))
+    repository.store_sources(conn, json.dumps(stored, ensure_ascii=False))
 
 def _stored_sources(conn):
     stored = json.loads(db_helper.get_meta(conn, "known_sources") or "{}")
@@ -127,16 +128,6 @@ def _find_legacy_vocab_notes(word, sources):
 def _retire_word_rows(conn, word, sources, reason):
     note_ids = _find_legacy_vocab_notes(word, sources)
     suspended = anki_connector.archive_notes(note_ids)
-    conn.execute(
-        "UPDATE known_words SET status = 'retired',"
-        " retired_at = COALESCE(retired_at, CURRENT_TIMESTAMP),"
-        " retired_reason = COALESCE(retired_reason, ?),"
-        " updated_at = CURRENT_TIMESTAMP"
-        " WHERE kind = 'word' AND word = ?", (reason, word))
+    repository.retire(conn, word, reason)
     log(f"[Legacy] Retired {word}: {len(note_ids)} notes, {suspended} cards ({reason})")
     return {"word": word, "legacy_notes": len(note_ids), "cards_suspended": suspended}
-
-_EXACT_MATCH_SQL = """EXISTS (SELECT 1 FROM cards c
-    WHERE {extra} (c.root_id = w.norm_key OR c.root_id LIKE w.norm_key || '(%'))"""
-_READING_MATCH_SQL = """(w.norm_key NOT LIKE '%(%' AND EXISTS (SELECT 1 FROM cards c
-    WHERE {extra} c.root_id LIKE '%(' || w.norm_key || ')'))"""

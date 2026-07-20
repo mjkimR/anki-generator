@@ -9,10 +9,10 @@ sys.path.append(str(src_dir))
 
 from anki_generator import db_helper, legacy_helper
 from anki_generator import config
-from anki_generator.db_helper import get_connection
+from tests.db_support import open_test_db
 
 def seed_known(db, rows):
-    conn = get_connection(db)
+    conn = open_test_db(db)
     for r in rows:
         conn.execute(
             "INSERT INTO known_words (kind, word, reading, meaning, source_deck,"

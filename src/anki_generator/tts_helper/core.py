@@ -5,13 +5,16 @@ import asyncio
 import hashlib
 from pathlib import Path
 
-# Edge TTS Import
-try:
-    import edge_tts
-except ImportError:
-    edge_tts = None
-
 from anki_generator import config
+
+
+def _load_edge_tts():
+    """Load the network-heavy TTS client only when synthesis is required."""
+    try:
+        import edge_tts
+    except ImportError:
+        return None
+    return edge_tts
 
 def reading_to_kana(back_reading):
     """Turns the validated bracket-furigana sentence into the exact text TTS should
@@ -36,6 +39,7 @@ def clean_html(raw_html):
     return text.strip()
 
 async def generate_speech(text, output_path, voice):
+    edge_tts = _load_edge_tts()
     if edge_tts is None:
         return {"success": False, "error": "edge-tts library is not installed."}
 

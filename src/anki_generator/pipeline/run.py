@@ -63,6 +63,16 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
                         "for the listed cards — do NOT modify any Japanese field — then run "
                         "this command again."),
         }
+        # Duplicate-sense safety net: dedup is the agent's Step-1 `db check`, but a skipped
+        # check would otherwise insert silently (the DB key is (root_id, front), so a new
+        # sentence is always a new row). Surface it here, before the Korean pass.
+        existing = db_helper.count_other_senses(cards, db_path=db_path)
+        if existing:
+            result["existing_cards"] = existing
+            result["message"] += (
+                " NOTE existing_cards: these root_id(s) already own other card(s) in the "
+                "DB — confirm each new card is a genuinely different sense, not a "
+                "duplicate, before filling Korean.")
         warnings = vres.get("warnings")
         if warnings:
             result["warnings"] = warnings

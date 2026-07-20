@@ -9,10 +9,11 @@ sys.path.append(str(src_dir))
 
 from anki_generator import legacy_helper
 from anki_generator import config
-from anki_generator.db_helper import get_connection, insert_card_records
+from anki_generator.db_helper import insert_card_records
+from tests.db_support import open_test_db
 
 def seed_known(db, rows):
-    conn = get_connection(db)
+    conn = open_test_db(db)
     for r in rows:
         conn.execute(
             "INSERT INTO known_words (kind, word, reading, meaning, source_deck,"
@@ -24,8 +25,9 @@ def seed_known(db, rows):
     conn.close()
 
 def seed_sources(db, specs):
-    conn = get_connection(db)
+    conn = open_test_db(db)
     legacy_helper._record_sources(conn, specs)
+    conn.commit()
     conn.close()
 
 def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
@@ -89,7 +91,7 @@ def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     assert [c["root_id"] for c in matched] == ["咎める(とがめる)"]
     assert matched[0]["target_word"] == "咎める"
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     statuses = dict(conn.execute("SELECT word || '/' || source_deck, status FROM known_words"))
     conn.close()
     assert statuses["妥協/JLPT N1"] == "retired"
@@ -111,7 +113,7 @@ def test_retire_promoted_archives_and_flips_status(tmp_path, monkeypatch):
     assert result["already_retired"] is False
     assert calls["suspended"] == [601, 602, 603]
     assert calls["tagged"] == [501, 502, 503]
-    conn = get_connection(db)
+    conn = open_test_db(db)
     status = conn.execute("SELECT status FROM known_words"
                           " WHERE word = 'とがめる'").fetchone()[0]
     conn.close()

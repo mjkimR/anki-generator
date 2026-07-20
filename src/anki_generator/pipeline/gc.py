@@ -5,6 +5,7 @@ from anki_generator import db_helper
 from anki_generator.schemas import CmdGcMediaResponse
 from anki_generator.common import coerce_cards
 from .core import load_json
+from . import repository
 
 def _extract_audio_paths(data) -> set[str]:
     cards = coerce_cards(data)
@@ -17,10 +18,8 @@ def _extract_audio_paths(data) -> set[str]:
     return res
 
 def cmd_gc_media(db_path=None) -> tuple[CmdGcMediaResponse, int]:
-    conn = db_helper.get_connection(db_path)
-    referenced = {Path(row[0]).name for row in conn.execute(
-        "SELECT audio_path FROM cards WHERE audio_path IS NOT NULL AND audio_path != ''")}
-    conn.close()
+    with db_helper.connection(db_path) as conn:
+        referenced = repository.referenced_audio_names(conn)
 
     for pending_file in config.CARDS_PENDING_DIR.glob("*.json"):
         try:

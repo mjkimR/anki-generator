@@ -9,6 +9,7 @@ sys.path.append(str(src_dir))
 
 from anki_generator import pipeline, db_helper
 from anki_generator import config
+from tests.db_support import open_test_db
 
 def make_japanese_card(**overrides):
     card = {
@@ -85,7 +86,7 @@ def test_backfill_audio_updates_db_and_anki_note(tmp_path, monkeypatch):
     # Only the Audio field is touched on the existing note.
     assert captured["note"] == {"id": 777, "fields": {"Audio": "[sound:tts_backfilled.mp3]"}}
 
-    conn = db_helper.get_connection(db)
+    conn = open_test_db(db)
     assert conn.execute("SELECT audio_path FROM cards").fetchone()[0] == "tts_backfilled.mp3"
     conn.close()
 

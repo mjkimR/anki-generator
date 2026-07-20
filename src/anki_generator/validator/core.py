@@ -1,15 +1,10 @@
 import os
 import re
 import json
+from typing import Any
 
 from anki_generator.schemas import ValidationResult
 from anki_generator.common import coerce_cards, TARGET_MARKER_RE
-
-# Janome Import (Works inside the virtual environment)
-try:
-    from janome.tokenizer import Tokenizer
-except ImportError:
-    Tokenizer = None
 
 # joyokanji Import: converts kyūjitai (舊字體, ≈ Korean traditional hanja) -> shinjitai (新字體).
 # The map keys ARE the old-form set, so hitting one means a traditional/Korean-style glyph
@@ -160,12 +155,19 @@ def validate_korean_mix(card):
                 
     return errors
 
-# Janome dictionary loading is expensive (~1s); build the tokenizer once per process.
-_TOKENIZER = None
+# Build Janome once per process, but do not import its dictionary until a yomigana check
+# actually needs it. Most CLI commands never tokenize anything.
+_TOKENIZER: Any = None
+_TOKENIZER_UNAVAILABLE = False
 
 def _get_tokenizer():
-    global _TOKENIZER
-    if Tokenizer is not None and _TOKENIZER is None:
+    global _TOKENIZER, _TOKENIZER_UNAVAILABLE
+    if _TOKENIZER is None and not _TOKENIZER_UNAVAILABLE:
+        try:
+            from janome.tokenizer import Tokenizer
+        except ImportError:
+            _TOKENIZER_UNAVAILABLE = True
+            return None
         _TOKENIZER = Tokenizer()
     return _TOKENIZER
 

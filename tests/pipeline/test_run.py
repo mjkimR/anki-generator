@@ -10,6 +10,7 @@ sys.path.append(str(src_dir))
 
 from anki_generator import pipeline, db_helper
 from anki_generator import config
+from tests.db_support import open_test_db
 
 def make_japanese_card(**overrides):
     card = {
@@ -113,11 +114,25 @@ def test_valid_japanese_gates_on_korean(tmp_path):
     assert result["status"] == "need_korean"
     assert code == 0
     assert result["cards_missing_korean"][0]["root_id"] == "妥協(だきょう)"
+    assert "existing_cards" not in result  # nothing else in the DB — no dedup noise
 
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["cards"][0]["status"] == "validated"
     # Nothing may be persisted before the Korean pass completes.
     assert db_helper.fetch_pending(db_path=db) == []
+
+def test_need_korean_flags_existing_cards_for_same_root(tmp_path):
+    # Dedup is the agent's Step-1 db check, but a skipped check must not insert silently:
+    # the Pass-A response surfaces how many *other* cards the root_id already owns.
+    db = str(tmp_path / "test.db")
+    db_helper.insert_card_records(
+        [make_japanese_card(front="別の文で*妥協*した。", back_meaning="뜻")], db_path=db)
+    path = write_file(tmp_path, [make_japanese_card()])  # same root_id, new sentence
+
+    result, _ = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert result["status"] == "need_korean"
+    assert result["existing_cards"] == {"妥協(だきょう)": 1}
+    assert "existing_cards" in result["message"]
 
 def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
@@ -139,7 +154,7 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     assert exported["synced_to_anki"] == 1
 
     # DB-first persistence, then marked synced with the Anki note id captured.
-    conn = db_helper.get_connection(db)
+    conn = open_test_db(db)
     row = conn.execute("SELECT synced_to_anki, back_meaning, anki_note_id FROM cards").fetchone()
     conn.close()
     assert row == (1, "타협", 12345)

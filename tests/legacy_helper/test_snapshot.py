@@ -10,7 +10,7 @@ sys.path.append(str(src_dir))
 
 from anki_generator import db_helper, legacy_helper
 from anki_generator import config
-from anki_generator.db_helper import get_connection
+from tests.db_support import open_test_db
 
 VOCAB_NOTES = {
     1: {"noteId": 1, "fields": {"단어": {"value": "努める"},
@@ -77,7 +77,7 @@ def test_snapshot_builds_registry(tmp_path, monkeypatch):
     assert result["snapshot_rows"] == 2  # 努める (merged) + ～しか～ない (merged)
     assert result["registry_total"] == 2
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     word = conn.execute(
         "SELECT reading, meaning, lapses, ease, ivl, reps, anki_note_id, status,"
         " norm_key FROM known_words WHERE kind='word' AND word='努める'"
@@ -123,7 +123,7 @@ def test_snapshot_no_args_refreshes_registered_sources(tmp_path, monkeypatch):
 def test_snapshot_preserves_retired_status(tmp_path, monkeypatch):
     patch_fake_anki(monkeypatch, tmp_path)
     db = str(tmp_path / "test.db")
-    conn = get_connection(db)
+    conn = open_test_db(db)
     conn.execute(
         "INSERT INTO known_words (kind, word, source_deck, status, lapses)"
         " VALUES ('word', '努める', 'V어휘', 'retired', 1)")
@@ -132,7 +132,7 @@ def test_snapshot_preserves_retired_status(tmp_path, monkeypatch):
 
     legacy_helper.cmd_snapshot(db_path=db, sources=[SPEC_V, SPEC_G])
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     status, lapses = conn.execute(
         "SELECT status, lapses FROM known_words WHERE word='努める'").fetchone()
     conn.close()
@@ -182,7 +182,7 @@ def test_snapshot_custom_source_with_custom_fields(tmp_path, monkeypatch):
     assert code == 0 and result["status"] == "done"
     assert result["snapshot_rows"] == 1
 
-    conn = get_connection(db)
+    conn = open_test_db(db)
     row = conn.execute(
         "SELECT word, reading, meaning, source_deck, lapses, norm_key"
         " FROM known_words").fetchone()

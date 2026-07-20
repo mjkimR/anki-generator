@@ -2,26 +2,10 @@ from typing import cast
 
 from anki_generator.schemas import CmdWeakQueueResponse, CmdCoverageResponse
 from anki_generator import db_helper
-from .core import _EXACT_MATCH_SQL, _READING_MATCH_SQL
-
+from . import repository
 def cmd_weak_queue(min_lapses=4, limit=20, db_path=None) -> tuple[CmdWeakQueueResponse, int]:
-    conn = db_helper.get_connection(db_path)
-    rows = conn.execute(
-        f"""
-        SELECT word, MAX(lapses) AS lapses, MIN(ease) AS ease,
-               GROUP_CONCAT(source_deck, ' / ') AS sources,
-               MAX(reading) AS reading, MAX(meaning) AS meaning
-        FROM known_words w
-        WHERE kind = 'word' AND status = 'learned'
-          AND NOT ({_EXACT_MATCH_SQL.format(extra="")}
-                   OR {_READING_MATCH_SQL.format(extra="")})
-        GROUP BY word
-        HAVING MAX(lapses) >= ?
-        ORDER BY lapses DESC, ease ASC, word
-        """,
-        (min_lapses,),
-    ).fetchall()
-    conn.close()
+    with db_helper.connection(db_path) as conn:
+        rows = repository.weak_queue(conn, min_lapses)
 
     queue = [
         {"word": r[0], "lapses": r[1], "ease": r[2], "sources": r[3],
@@ -32,19 +16,13 @@ def cmd_weak_queue(min_lapses=4, limit=20, db_path=None) -> tuple[CmdWeakQueueRe
             "returned": len(queue), "queue": queue}), 0
 
 def cmd_coverage(db_path=None, limit=10) -> tuple[CmdCoverageResponse, int]:
-    conn = db_helper.get_connection(db_path)
-    refreshed = db_helper.refresh_card_lemmas(conn)
-    lemma_rows = conn.execute(
-        "SELECT lemma, SUM(count) FROM card_lemmas GROUP BY lemma").fetchall()
+    with db_helper.transaction(db_path) as conn:
+        refreshed = db_helper.refresh_card_lemmas(conn)
+        lemma_rows, words = repository.coverage_rows(conn)
     kanji_lemmas, kana_lemmas = {}, {}
     for lemma, total in lemma_rows:
         bucket = kanji_lemmas if db_helper.KANJI_RE.search(lemma) else kana_lemmas
         bucket[lemma] = total
-    words = conn.execute(
-        "SELECT word, source_deck, status, norm_key FROM known_words"
-        " WHERE kind = 'word'").fetchall()
-    conn.close()
-
     per_source, top = {}, {}
     for word, source, status, norm_key in words:
         key = norm_key or word

@@ -4,6 +4,7 @@ from typing import cast
 from anki_generator import config
 from anki_generator.schemas import CmdDoctorResponse
 from . import core
+from . import repository
 from anki_generator import anki_connector, db_helper
 
 def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
@@ -34,10 +35,8 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
         add("edge-tts", False, str(e))
 
     try:
-        conn = db_helper.get_connection(db_path)
-        total = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-        pending = conn.execute("SELECT COUNT(*) FROM cards WHERE synced_to_anki = 0").fetchone()[0]
-        conn.close()
+        with db_helper.connection(db_path) as conn:
+            total, pending = repository.database_summary(conn)
         add("database", True, f"{total} cards, {pending} pending sync")
     except Exception as e:
         add("database", False, str(e))
@@ -52,23 +51,28 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
         add("media_dir", False, str(e))
 
     try:
-        # Every skill (a directory under skills/ carrying a SKILL.md) needs its own
-        # .agents/skills symlink. One aggregate check reports the first broken one.
+        # Every skill (a directory under skills/ carrying a SKILL.md) needs its symlink in
+        # BOTH link roots — .agents/skills (open agent-skills layout) and .claude/skills
+        # (Claude Code's project-skill location). One aggregate check reports the first
+        # broken one.
         skills = sorted(d for d in core.SKILLS_DIR.iterdir()
                         if (d / "SKILL.md").is_file())
         bad = None
         for skill_dir in skills:
-            link = config.PROJECT_ROOT / ".agents" / "skills" / skill_dir.name
-            if link.exists() and link.resolve() == skill_dir.resolve():
-                continue
-            if link.is_symlink():
-                state = "broken" if not link.exists() else f"pointing at {link.resolve()}"
-            elif link.exists():
-                state = "not a symlink to the repo skill"
-            else:
-                state = "missing"
-            bad = f"{link} is {state} — run ./setup_symlinks.sh (or ./setup.sh)"
-            break
+            for root in (".agents", ".claude"):
+                link = config.PROJECT_ROOT / root / "skills" / skill_dir.name
+                if link.exists() and link.resolve() == skill_dir.resolve():
+                    continue
+                if link.is_symlink():
+                    state = "broken" if not link.exists() else f"pointing at {link.resolve()}"
+                elif link.exists():
+                    state = "not a symlink to the repo skill"
+                else:
+                    state = "missing"
+                bad = f"{link} is {state} — run ./setup_symlinks.sh (or ./setup.sh)"
+                break
+            if bad:
+                break
         if bad is None:
             add("skill_symlink", True, f"{len(skills)} skill(s) linked")
         else:
@@ -77,9 +81,8 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
         add("skill_symlink", False, str(e))
 
     try:
-        conn = db_helper.get_connection(db_path)
-        db_count = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-        conn.close()
+        with db_helper.connection(db_path) as conn:
+            db_count = repository.count_cards(conn)
         file_count, line_count = db_helper.count_export_lines()
         if line_count == db_count:
             add("data_backup", True, f"{db_count} cards ↔ {line_count} JSONL lines ({file_count} partitions)")
@@ -95,9 +98,8 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
         add("data_backup", False, str(e))
 
     try:
-        conn = db_helper.get_connection(db_path)
-        known_count = conn.execute("SELECT COUNT(*) FROM known_words").fetchone()[0]
-        conn.close()
+        with db_helper.connection(db_path) as conn:
+            known_count = repository.count_known_words(conn)
         known_lines = db_helper.count_known_lines()
         if known_count or known_lines:
             if known_count == known_lines:
@@ -108,6 +110,27 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
                     f"{known_lines} lines — run 'anki-gen db export' and commit data/")
     except Exception as e:
         add("known_words", False, str(e))
+
+    try:
+        with db_helper.connection(db_path) as conn:
+            for table, count_fn, label in (
+                ("attempts", db_helper.count_attempts_lines, "attempts"),
+                ("confusions", db_helper.count_confusions_lines, "confusion rows"),
+                ("card_feedback", db_helper.count_card_feedback_lines, "feedback rows"),
+            ):
+                db_count = repository.count_practice_rows(conn, table)
+                lines = count_fn()
+                if not (db_count or lines):
+                    continue  # untouched table — nothing to report either way
+                if db_count == lines:
+                    add(f"{table}_backup", True,
+                        f"{db_count} {label} ↔ {lines} JSONL lines")
+                else:
+                    add(f"{table}_backup", False,
+                        f"DB has {db_count} {label} but the {table} mirror holds {lines} "
+                        f"lines — run 'anki-gen db export' and commit data/")
+    except Exception as e:
+        add("practice_data_backup", False, str(e))
 
     if not config.ANKI_ENABLED:
         add("anki_connect", True, "disabled (ANKI_ENABLED=0) — generation-only machine")
@@ -125,11 +148,8 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
         add("anki_connect", False, str(e))
 
     try:
-        conn = db_helper.get_connection(db_path)
-        tracked = [row[0] for row in conn.execute(
-            "SELECT anki_note_id FROM cards"
-            " WHERE synced_to_anki = 1 AND anki_note_id IS NOT NULL")]
-        conn.close()
+        with db_helper.connection(db_path) as conn:
+            tracked = repository.tracked_anki_note_ids(conn)
         if tracked:
             in_anki = set(anki_connector.invoke(
                 "findNotes", query=f'"note:{config.ANKI_NOTE_MODEL}"'))
@@ -148,7 +168,8 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
 
 def _doctor_result(checks) -> tuple[CmdDoctorResponse, int]:
     WARN_ONLY = {"anki_connect", "data_backup", "anki_notes", "known_words",
-                 "skill_symlink"}
+                 "skill_symlink", "attempts_backup", "confusions_backup",
+                 "card_feedback_backup", "practice_data_backup"}
     core_ok = all(c["ok"] for c in checks if c["check"] not in WARN_ONLY)
     warnings = [c["check"] for c in checks if c["check"] in WARN_ONLY and not c["ok"]]
     result = {"status": "ok" if core_ok else "error", "checks": checks}
@@ -164,5 +185,9 @@ def _doctor_result(checks) -> tuple[CmdDoctorResponse, int]:
             notes.append("Some synced cards are missing from this Anki collection — see the anki_notes check detail.")
         if "skill_symlink" in warnings:
             notes.append("The agent-skill symlink is not set up — run ./setup_symlinks.sh.")
+        if {"attempts_backup", "confusions_backup", "card_feedback_backup",
+            "practice_data_backup"} & set(warnings):
+            notes.append("A practice-data table and its JSONL mirror are out of sync — "
+                         "run 'anki-gen db export' and commit data/.")
         result["message"] = "Core environment is healthy. " + " ".join(notes)
     return cast(CmdDoctorResponse, result), (0 if core_ok else 1)

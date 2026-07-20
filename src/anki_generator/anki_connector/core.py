@@ -1,7 +1,6 @@
 import os
 import json
 import base64
-import requests
 from pathlib import Path
 
 from anki_generator.config import ANKI_CONNECT_URL, ANKI_NOTE_MODEL
@@ -56,6 +55,10 @@ def _load_model_assets():
 
 def invoke(action, **params):
     """Helper function to invoke AnkiConnect API actions."""
+    # requests is only needed for actual Anki I/O. Keeping it out of module import
+    # avoids paying its startup cost for validation, DB, and help-only commands.
+    import requests
+
     payload = {"action": action, "version": 6, "params": params}
     try:
         response = requests.post(ANKI_CONNECT_URL, json=payload, timeout=5)
