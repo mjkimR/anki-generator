@@ -1,0 +1,11 @@
+<!-- Hyogai recognition template — kanji-form familiarity, not recall (ADR-0009).
+     The front is the example sentence with the target in its KANJI surface (the vocab
+     card writes it in kana, so this is the only place the rare spelling is met in
+     context), plus a priority badge so the user weights their attention per card.
+     The whole front is wrapped in {{#HyogaiKanji}}…{{/HyogaiKanji}} so a non-hyōgai
+     note (empty field) renders an empty front and Anki generates NO recognition card
+     for it. That conditional IS the gate — keep every visible element inside it. -->
+{{#HyogaiKanji}}
+<div class="hyogai-prompt">表外漢字 — 読める？{{#HyogaiPriority}}<span class="hyogai-prio hyogai-prio-{{HyogaiPriority}}">{{HyogaiPriority}}</span>{{/HyogaiPriority}}</div>
+<div class="sentence">{{HyogaiFront}}</div>
+{{/HyogaiKanji}}

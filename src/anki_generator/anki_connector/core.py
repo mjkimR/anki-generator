@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import base64
 from pathlib import Path
@@ -17,19 +18,73 @@ MODEL_DIR = current_file.parent.parent / "anki_model"
 
 # Front must stay first — it is Anki's duplicate-detection key. RootId is not rendered
 # by any template; it exists so Anki-side features (leech rescue, flag harvest) can
-# identify the word without depending on the note-id ↔ DB join.
-MODEL_FIELDS = ("Front", "Reading", "Meaning", "Tip", "Audio", "RootId")
+# identify the word without depending on the note-id ↔ DB join. New fields are only
+# ever APPENDED — ensure_note_model upgrades an existing model by adding the missing
+# tail fields in place (modelFieldAdd), and appending keeps that upgrade path safe.
+# The hyōgai fields (ADR-0009) are all empty on non-hyōgai notes:
+# - HyogaiKanji: the dictionary kanji headword — renders the 漢字表記 line on the
+#   vocab/listening backs and gates the Hyogai recognition template.
+# - HyogaiFront: the example sentence with the target written in its KANJI surface
+#   (push-time stem substitution; headword fallback) — the recognition card's front.
+# - HyogaiPriority: high/mid/low, rendered as a badge on the recognition front so the
+#   user weights their attention per card instead of per deck.
+MODEL_FIELDS = ("Front", "Reading", "Meaning", "Tip", "Audio", "RootId",
+                "HyogaiKanji", "HyogaiFront", "HyogaiPriority")
 
 # Card templates, in order. "Card 1" MUST stay first (ordinal 0) so the vocab cards Anki
 # already built keep their identity; new templates are only ever appended, never reordered.
 # Front/Back name the git-managed files under anki_model/. "Listening" is audio-first: its
-# front gates on {{#Audio}}, so a note with no audio grows no listening card.
+# front gates on {{#Audio}}, so a note with no audio grows no listening card. "Hyogai" is
+# the kanji-recognition card: its front gates on {{#HyogaiKanji}} the same way.
 VOCAB_TEMPLATE_NAME = "Card 1"
 LISTENING_TEMPLATE_NAME = "Listening"
+HYOGAI_TEMPLATE_NAME = "Hyogai"
 CARD_TEMPLATES = (
     {"name": VOCAB_TEMPLATE_NAME, "front": "front.html", "back": "back.html"},
     {"name": LISTENING_TEMPLATE_NAME, "front": "front_listening.html", "back": "back_listening.html"},
+    {"name": HYOGAI_TEMPLATE_NAME, "front": "front_hyogai.html", "back": "back_hyogai.html"},
 )
+
+# The Anki tag carrying the hyōgai priority (표외한자::high 등) — hierarchical, so
+# searching the bare parent tag still finds every hyōgai note. Search/filter only;
+# the priority the templates render comes from the HyogaiPriority field.
+HYOGAI_TAG = "표외한자"
+HYOGAI_PRIORITIES = ("high", "mid", "low")
+
+def hyogai_inflected_surface(root_id, target_word):
+    """The inflected KANJI surface of a kana target (とがめた → 咎めた), derived by
+    stem substitution: the headword's trailing okurigana (longest common suffix of the
+    kanji form and its reading) splits both into stems, and a target that starts with
+    the reading stem swaps it for the kanji stem. None when the root is a kana headword
+    or the target conjugates outside the stem (caller falls back to the headword)."""
+    m = re.match(r"^([^(]+)\(([^)]+)\)$", root_id or "")
+    if not m:
+        return None
+    kanji, reading = m.group(1), m.group(2)
+    if kanji == reading:
+        return None
+    i = 0
+    while i < min(len(kanji), len(reading)) and kanji[-1 - i] == reading[-1 - i]:
+        i += 1
+    kanji_stem = kanji[:len(kanji) - i]
+    reading_stem = reading[:len(reading) - i]
+    if reading_stem and (target_word or "").startswith(reading_stem):
+        return kanji_stem + target_word[len(reading_stem):]
+    return None
+
+def hyogai_sentence_front(card):
+    """The recognition card's front, plain text with the *…* marker intact: the example
+    sentence with the kana target swapped for its kanji surface. Falls back to the bare
+    dictionary headword when the substitution cannot be made. Empty for non-hyōgai."""
+    if not card.get("is_hyogai"):
+        return ""
+    headword = card.get("root_id", "").split("(", 1)[0]
+    surface = hyogai_inflected_surface(card.get("root_id"), card.get("target_word"))
+    front = card.get("front", "")
+    marked = f"*{card.get('target_word', '')}*"
+    if surface and marked in front:
+        return front.replace(marked, f"*{surface}*")
+    return headword
 
 def marker_to_html(text):
     """Converts the plain-text *word* target marker (shared contract: common.py's
@@ -98,12 +153,20 @@ def upload_audio_to_anki(audio_path):
     result_filename = invoke("storeMediaFile", filename=file_name, data=file_content_base64)
     return result_filename
 
+class AudioUploadError(RuntimeError):
+    """Audio was synthesized locally but could not be stored in Anki media."""
+
 def update_note_audio(note_id, audio_path):
     """Backfills the Audio field of an existing note: uploads the media file, then
     updates only that field via updateNoteFields — every other field stays untouched.
     First piece of the shared note-update plumbing that card-edit sync and leech
     rescue will generalize later."""
-    audio_filename = upload_audio_to_anki(audio_path)
+    try:
+        audio_filename = upload_audio_to_anki(audio_path)
+    except Exception as audio_err:
+        raise AudioUploadError(
+            f"Anki media upload failed for '{Path(audio_path).name}': {str(audio_err)}"
+        ) from audio_err
     invoke("updateNoteFields",
            note={"id": note_id, "fields": {"Audio": f"[sound:{audio_filename}]"}})
     return audio_filename
@@ -125,7 +188,7 @@ def push_card(card, deck_name, model_name):
         full_path = Path(audio_path)
         if not full_path.is_absolute() and not full_path.exists():
             full_path = MEDIA_DIR / audio_path
-        if not full_path.exists():
+        if not full_path.exists() or full_path.stat().st_size == 0:
             from anki_generator import tts_helper
             from anki_generator.pipeline.core import _tts_text
             text = _tts_text(card)
@@ -133,11 +196,34 @@ def push_card(card, deck_name, model_name):
             if tres.get("success"):
                 full_path = Path(tres["output_path"])
                 card["audio_path"] = full_path.name
-        if full_path.exists():
-            try:
-                audio_filename = upload_audio_to_anki(full_path)
-            except Exception as audio_err:
-                log(f"[Anki Warning] Failed to upload audio: {str(audio_err)}")
+                card["tts_provider"] = tres.get("provider")
+                card["tts_voice"] = tres.get("voice")
+                card["tts_render_version"] = tres.get("render_version")
+            else:
+                code = tres.get("error_code", "tts_unknown")
+                stage = tres.get("error_stage", "unknown")
+                raise RuntimeError(
+                    f"TTS synthesis failed [{code} at {stage}]: {tres.get('error')}")
+        if not full_path.exists() or full_path.stat().st_size == 0:
+            raise RuntimeError(
+                f"TTS reported success but output is missing or empty: {full_path}")
+        try:
+            audio_filename = upload_audio_to_anki(full_path)
+        except Exception as audio_err:
+            raise AudioUploadError(
+                f"Anki media upload failed for '{full_path.name}': {str(audio_err)}"
+            ) from audio_err
+
+    # ADR-0009: a hyōgai note carries its dictionary kanji headword (漢字表記 back
+    # line + recognition-card gate), the kanji-surface sentence the recognition card
+    # fronts, and the priority badge value — plus a hierarchical priority tag for
+    # search/filtering.
+    is_hyogai = bool(card.get("is_hyogai"))
+    headword = card.get("root_id", "").split("(", 1)[0]
+    priority = (card.get("hyogai_priority") or "") if is_hyogai else ""
+    tags = list(card.get("tags", []))
+    if is_hyogai:
+        tags.append(f"{HYOGAI_TAG}::{priority}" if priority else HYOGAI_TAG)
 
     note = {
         "deckName": deck_name,
@@ -149,8 +235,11 @@ def push_card(card, deck_name, model_name):
             "Tip": card.get("back_tip", ""),
             "Audio": f"[sound:{audio_filename}]" if audio_filename else "",
             "RootId": card.get("root_id", ""),
+            "HyogaiKanji": headword if is_hyogai else "",
+            "HyogaiFront": marker_to_html(hyogai_sentence_front(card)),
+            "HyogaiPriority": priority,
         },
-        "tags": card.get("tags", []),
+        "tags": tags,
     }
 
     try:
@@ -179,13 +268,21 @@ def ensure_note_model():
         log(f"[Anki] Created note model '{name}' with {len(templates)} template(s)")
         return name
 
-    fields = invoke("modelFieldNames", modelName=name)
-    if list(fields) != list(MODEL_FIELDS):
-        raise Exception(
-            f"Note model '{name}' exists but its fields {fields} do not match "
-            f"{list(MODEL_FIELDS)}. Point ANKI_NOTE_MODEL at a fresh name and let the "
-            f"pipeline create it."
-        )
+    fields = list(invoke("modelFieldNames", modelName=name))
+    if fields != list(MODEL_FIELDS):
+        # A model created by an older repo version is missing only appended tail
+        # fields — add them in place (modelFieldAdd), which touches no existing card
+        # or its history. Anything else is a foreign layout and stays refused.
+        if fields != list(MODEL_FIELDS[:len(fields)]):
+            raise Exception(
+                f"Note model '{name}' exists but its fields {fields} do not match "
+                f"{list(MODEL_FIELDS)}. Point ANKI_NOTE_MODEL at a fresh name and let "
+                f"the pipeline create it."
+            )
+        for index in range(len(fields), len(MODEL_FIELDS)):
+            invoke("modelFieldAdd", modelName=name,
+                   fieldName=MODEL_FIELDS[index], index=index)
+            log(f"[Anki] Added field '{MODEL_FIELDS[index]}' to '{name}'")
 
     if invoke("modelStyling", modelName=name)["css"] != css:
         invoke("updateModelStyling", model={"name": name, "css": css})
@@ -228,6 +325,25 @@ def route_listening_cards(source_deck, listening_deck):
     if card_ids:
         invoke("changeDeck", cards=card_ids, deck=listening_deck)
         log(f"[Anki] Routed {len(card_ids)} listening card(s) → {listening_deck}")
+    return len(card_ids)
+
+def route_hyogai_cards(source_deck, hyogai_deck):
+    """Deck routing for the Hyogai recognition template, mirroring the Listening sweep:
+    cards are born in the note's own deck and moved into the single hyōgai deck, whose
+    new-cards/day limit throttles the whole familiarization stream. Attention weighting
+    happens on the card itself (the HyogaiPriority badge), not via subdecks.
+    Idempotent; returns the number of cards moved."""
+    if not source_deck or not hyogai_deck or source_deck == hyogai_deck:
+        return 0
+    if hyogai_deck not in invoke("deckNames"):
+        invoke("createDeck", deck=hyogai_deck)
+        log(f"[Anki] Created hyōgai deck: {hyogai_deck}")
+    query = (f'note:"{ANKI_NOTE_MODEL}" deck:"{source_deck}" '
+             f'card:"{HYOGAI_TEMPLATE_NAME}"')
+    card_ids = invoke("findCards", query=query)
+    if card_ids:
+        invoke("changeDeck", cards=card_ids, deck=hyogai_deck)
+        log(f"[Anki] Routed {len(card_ids)} hyōgai card(s) → {hyogai_deck}")
     return len(card_ids)
 
 # Archive semantics, single-sourced: suspend + tag — reversible, review history

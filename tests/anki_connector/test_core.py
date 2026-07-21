@@ -78,6 +78,29 @@ def test_push_card_other_error_raises(monkeypatch):
     except Exception as e:
         assert "model was not found" in str(e)
 
+def test_push_card_does_not_create_silent_note_when_audio_upload_fails(
+        tmp_path, monkeypatch):
+    audio = tmp_path / "tts_audio.mp3"
+    audio.write_bytes(b"audio")
+    actions = []
+
+    def fake_invoke(action, **params):
+        actions.append(action)
+        if action == "storeMediaFile":
+            raise Exception("Anki media directory is not writable")
+        if action == "addNote":
+            raise AssertionError("note must not be created after audio upload failure")
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    try:
+        anki_connector.push_card(
+            make_card(audio_path=str(audio)), "TestDeck", "AnkiGen JA")
+        assert False, "expected audio upload failure"
+    except anki_connector.core.AudioUploadError as e:
+        assert "Anki media upload failed" in str(e)
+    assert actions == ["storeMediaFile"]
+
 def test_ensure_note_model_creates_from_repo_assets(monkeypatch):
     created = {}
 
@@ -125,9 +148,9 @@ def test_ensure_note_model_syncs_drifted_styling(monkeypatch):
     assert "updateModelTemplates" not in calls  # templates already match
     assert "modelTemplateAdd" not in calls      # nothing missing to add
 
-def test_ensure_note_model_adds_missing_listening_template(monkeypatch):
-    """The vocab template exists but Listening does not — it must be ADDED (preserving the
-    existing cards), never trigger a model recreate."""
+def test_ensure_note_model_adds_missing_templates(monkeypatch):
+    """The vocab template exists but Listening/Hyogai do not — they must be ADDED
+    (preserving the existing cards), never trigger a model recreate."""
     added = []
     templates, css = anki_connector._load_model_assets()
     vocab = templates[0]
@@ -148,7 +171,8 @@ def test_ensure_note_model_adds_missing_listening_template(monkeypatch):
 
     monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     anki_connector.ensure_note_model()
-    assert added == [anki_connector.LISTENING_TEMPLATE_NAME]
+    assert added == [anki_connector.LISTENING_TEMPLATE_NAME,
+                     anki_connector.HYOGAI_TEMPLATE_NAME]
 
 def test_route_listening_cards_moves_to_its_deck(monkeypatch):
     calls = {}

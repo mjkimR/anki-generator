@@ -54,3 +54,44 @@ ruby rt {
   color: #8a8a8a;
   margin-bottom: 0.5em;
 }
+
+/* Hyōgai (ADR-0009): 漢字表記 note on the vocab/listening backs, and the
+   kanji-recognition card's own front/back elements. */
+.hyogai-note {
+  font-size: 0.65em;
+  color: #8a8a8a;
+  margin-top: 0.9em;
+}
+
+.hyogai-badge {
+  display: inline-block;
+  font-size: 0.8em;
+  font-weight: 700;
+  color: #fff;
+  background: #b0803c;
+  border-radius: 4px;
+  padding: 0 0.5em;
+  margin-right: 0.5em;
+  vertical-align: 0.1em;
+}
+
+.hyogai-prompt {
+  font-size: 0.7em;
+  color: #8a8a8a;
+  margin-bottom: 0.5em;
+}
+
+/* Priority badge on the recognition front: high demands attention, low is parked. */
+.hyogai-prio {
+  display: inline-block;
+  font-size: 0.85em;
+  font-weight: 700;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0 0.5em;
+  margin-left: 0.6em;
+}
+
+.hyogai-prio-high { background: #c0392b; }
+.hyogai-prio-mid  { background: #b0803c; }
+.hyogai-prio-low  { background: #8a8a8a; }

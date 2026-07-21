@@ -1,0 +1,9 @@
+<!-- Hyogai back: reveal the reading — the furigana Reading line writes the target in
+     kana (the vocab surface) and annotates every other kanji — then the headword with
+     its reading, meaning, and audio. Shares the vocab card's fields and CSS classes. -->
+{{FrontSide}}
+<hr id="answer">
+<div class="sentence reading">{{furigana:Reading}}</div>
+<div class="hyogai-note"><span class="hyogai-badge">表外</span>{{RootId}}</div>
+{{Audio}}
+{{#Meaning}}<div class="gloss meaning"><span class="label">뜻</span><span>{{Meaning}}</span></div>{{/Meaning}}

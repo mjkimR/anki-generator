@@ -36,6 +36,9 @@ def isolate_config_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CARDS_PENDING_DIR", tmp_path / "cards" / "pending")
     monkeypatch.setattr(config, "CARDS_DONE_DIR", tmp_path / "cards" / "done")
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "anki_generator.db")
+    # Most tests exercise orchestration without Azure credentials. Provider-specific
+    # tests override this explicitly; production defaults to fail-closed Azure.
+    monkeypatch.setattr(config, "TTS_PROVIDER", "edge")
     monkeypatch.setattr(pipeline.core, "ATTEMPTS_PATH",
                         tmp_path / "cards" / "pending" / ".attempts.json")
     return tmp_path
