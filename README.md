@@ -2,14 +2,14 @@
 
 An automated pipeline for generating Japanese learning cards for Anki. This tool is designed for personal vocabulary building, specifically tailored for advanced Japanese learners.
 
-It takes Japanese words, inflections, or sentences, extracts high-value targets, performs morphological validation, synthesizes natural Japanese speech using Edge-TTS, tracks duplicate entries in a local SQLite database, and directly pushes them to your local Anki application.
+It takes Japanese words, inflections, or sentences, extracts high-value targets, performs morphological validation, synthesizes natural Japanese speech with an explicitly selected provider, tracks duplicate entries in a local SQLite database, and directly pushes them to your local Anki application.
 
 ## Key Features
 
 - **Agent-Ready Design**: Structured CLI utilities designed to be orchestrated by an AI agent skill.
 - **Duplicate Prevention**: SQLite-based local database persistence to prevent duplicate card creation.
 - **Automated Validation**: Restricts parts of speech (POS) formats, checks for accidental Korean/Japanese character pollution, and cross-validates Yomigana using the `Janome` morphological parser.
-- **Neural Text-to-Speech**: Synthesizes clean native Japanese audio (using `edge-tts`) and uploads it to the Anki media folder.
+- **Fail-closed Neural Text-to-Speech**: Uses Azure by default or Edge when explicitly selected, never silently falls back between providers, and uploads audio only after successful synthesis.
 - **Direct Anki Integration**: Uses the AnkiConnect API to automatically register card notes into a targeted deck.
 - **Git-Managed Card Design**: The Anki note model (fields, templates, CSS) lives in this repo under `src/anki_generator/anki_model/` and is created/synced to Anki automatically — edit the CSS in git, and the next push updates Anki. Readings use Anki's built-in `{{furigana:}}` ruby rendering.
 - **Output Practice & Discovery**: A second agent skill drills Korean→Japanese *production* of your weak words (or a chosen topic), grades the answer with a code + model split, and auto-registers words discovered mid-practice as new cards — so practice grows the vocabulary, not just reviews it (`anki-gen practice …`).
@@ -46,8 +46,8 @@ your personal card data stays private. Backing up = committing & pushing **insid
   machine, sync Anki once before the first push. See
   `docs/architecture/data-and-sync.md` → *Multi-machine discipline*.
 - **Anki can stay closed**: cards persist locally as pending and the next pipeline run
-  with Anki open pushes them automatically (`anki-gen sync-pending` drains manually;
-  `anki-gen backfill-audio` repairs cards whose TTS failed). See
+  with Anki open pushes them automatically (`anki-gen sync-pending` drains manually and
+  retries fail-closed TTS errors). See
   `docs/architecture/data-and-sync.md` → *Offline flow*.
 - **Known-words registry**: `anki-gen legacy snapshot` mirrors the legacy Anki decks
   into per-source partitions under `data/known_words/` so `anki-gen db check` also answers
@@ -63,6 +63,14 @@ your personal card data stays private. Backing up = committing & pushing **insid
 1. **Python**: Ensure you have Python >= 3.13 installed.
 2. **uv**: We recommend using `uv` for fast dependency management.
 3. **Anki Desktop**: Install Anki, and make sure the **AnkiConnect** add-on (ID: 2055492159) is installed and running on port `8765`.
+4. **TTS**: Configure Azure in `.env` (the default provider):
+   ```dotenv
+   TTS_PROVIDER=azure
+   AZURE_SPEECH_KEY=<your-key>
+   AZURE_SPEECH_REGION=<your-region>
+   ```
+   To use Edge intentionally, set `TTS_PROVIDER=edge`; the pipeline never switches
+   providers automatically.
 
 ### Installation Steps
 

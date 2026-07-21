@@ -17,19 +17,31 @@ The repository owns the `AnkiGen JA` field layout, templates, and CSS under
 `src/anki_generator/anki_model/`. `ensure_note_model()` creates the model when missing and
 synchronizes git-owned styling and templates when they drift.
 
-A same-named model with a foreign field layout is refused rather than mutated. Missing
-templates are added without recreating the model, preserving existing card ordinals and
-review history.
+A same-named model with a foreign field layout is refused rather than mutated — unless the
+existing fields are an ordered prefix of the repo layout, in which case the missing tail
+fields are appended in place (`modelFieldAdd`), which touches no existing card. New fields
+are therefore only ever appended to `MODEL_FIELDS`. Missing templates are added without
+recreating the model, preserving existing card ordinals and review history.
 
 The model contains:
 
-- `Card 1`, the vocabulary card.
+- `Card 1`, the vocabulary card. Its back renders a `漢字表記 …【表外】` line for hyōgai
+  words (conditional on the `HyogaiKanji` field, which push fills with the dictionary
+  kanji headword from `root_id` — see
+  [ADR-0009](../decisions/0009-kanji-root-identity-kana-surface.md)).
 - `Listening`, an audio-first card whose conditional front prevents silent notes from
-  producing listening cards.
+  producing listening cards. Its back carries the same conditional 漢字表記 line.
+- `Hyogai`, a recognition card gated on `{{#HyogaiKanji}}` the same way — non-hyōgai
+  notes grow no recognition card. Its front is the example sentence with the target in
+  its kanji surface (`HyogaiFront`, push-time stem substitution with a headword
+  fallback) plus a priority badge (`HyogaiPriority`). Push also appends a hierarchical
+  `표외한자::<priority>` tag from `hyogai_priority` for search/filtering.
 
 AnkiConnect has no per-template deck override, so `route_listening_cards()` moves Listening
-cards into `ANKI_LISTENING_DECK`. The sweep is idempotent and is run after pushes as well as by
-`anki-gen sync-decks`.
+cards into `ANKI_LISTENING_DECK`, and `route_hyogai_cards()` moves Hyogai cards into the
+single `ANKI_HYOGAI_DECK` (its one new-cards/day limit throttles the familiarization
+stream; attention weighting is per card via the badge). Both sweeps are idempotent and run
+after pushes as well as by `anki-gen sync-decks`.
 
 ## Push and update behavior
 
@@ -44,13 +56,25 @@ are treated as already synchronized so retries remain idempotent.
 
 ## TTS
 
-TTS runs at push time and speaks the validated kana produced by
-`reading_to_kana(back_reading)`, never raw kanji. Cleanup removes HTML and card markup before
-synthesis.
+TTS runs at push time through the provider explicitly selected by `TTS_PROVIDER`: `azure`
+(default) or `edge`. There is no automatic fallback. Azure receives SSML whose `sub` nodes
+cover complete whitespace-delimited pronunciation units, so kanji and okurigana such as
+`果[は]てた` stay together as `<sub alias="はてた">果てた</sub>`. Edge receives the validated
+kana produced by `reading_to_kana(back_reading)`.
 
-The filename `tts_<md5(voice + text)>.mp3` is both the media name and cache key. A voice change
-therefore produces a new asset, while repeated pushes reuse the existing file. Empty or
-zero-byte output is rejected.
+If synthesis fails, that card is not pushed or marked synced; it remains in the DB queue for
+`sync-pending`. Anki being offline remains a normal persistence-only outcome.
+Failure responses preserve a stable `error_code`, the failing `error_stage`, whether the
+condition is retryable, and provider details. Azure cancellations additionally retain the
+service cancellation code/message and synthesis result ID, allowing authentication, quota,
+bad-request, connection, timeout, and availability failures to be distinguished without
+reissuing the request.
+
+The `tts_<md5(...)>.mp3` cache key includes provider, renderer version, voice, and annotated
+input. `cards` persists the matching `tts_provider`, `tts_voice`, and `tts_render_version`
+alongside `audio_path`, and the JSONL mirror carries the same provenance. Legacy audio keeps
+those fields null rather than receiving a guessed provider. Empty or zero-byte output is
+rejected.
 
 ## Archive semantics
 
@@ -60,4 +84,6 @@ implemented because the mirrored data model needs a tombstone design before dele
 survive reconciliation safely.
 
 See [ADR-0005](../decisions/0005-reversible-archive.md) and
-[ADR-0006](../decisions/0006-repository-owned-anki-model.md).
+[ADR-0006](../decisions/0006-repository-owned-anki-model.md). The TTS provider and
+failure policy is recorded in
+[ADR-0010](../decisions/0010-explicit-fail-closed-tts-provider.md).

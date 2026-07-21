@@ -12,11 +12,11 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 {
   "cards": [
     {
-      "front": "緊迫した交渉の場において、彼は決断を*躊躇った*。",
-      "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。",
+      "front": "緊迫した交渉の場において、彼は決断を*ためらった*。",
+      "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]をためらった。",
       "back_meaning": "긴박한 협상 자리에서 그는 결단을 *망설였다*.",
       "back_tip": "'躊躇う'는 결정을 내리지 못하고 우물쭈물하는 뉘앙스이며, 주로 부정형이나 과거형으로 많이 쓰입니다.",
-      "target_word": "躊躇った",
+      "target_word": "ためらった",
       "root_id": "躊躇う(ためらう)",
       "pos": "동사(1그룹/자동사) - 활용 없음",
       "components": [],
@@ -24,6 +24,7 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
         "決断を躊躇う"
       ],
       "is_hyogai": true,
+      "hyogai_priority": "mid",
       "tags": [
         "비즈니스",
         "N1",
@@ -34,7 +35,12 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 }
 ```
 
-> `躊躇う` sets `is_hyogai: true` because 躊 and 躇 are both non-jōyō kanji.
+> `躊躇う` is a hyōgai word (躊 and 躇 are non-jōyō), so per
+> [ADR-0009](decisions/0009-kanji-root-identity-kana-surface.md) the `root_id` keeps the
+> dictionary kanji headword while the target's surface in `front`/`target_word` is kana.
+> `is_hyogai` is recomputed by the validator from the `root_id` headword — the value the
+> generator writes is only a self-check. Context words in the sentence keep natural
+> orthography (醤油, 噂 stay kanji).
 
 ### Field Descriptions
 
@@ -49,9 +55,10 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 - **`pos`** *(string)*: Part of speech, formatted strictly as `MainPOS(SubPOS) - GrammarTag`.
 - **`components`** *(array of strings, Japanese-only)*: If the card is an idiom (e.g., `腹を割る`), contains individual morpheme dictionary base forms (e.g. `["腹", "割る"]`). Empty for non-idioms.
 - **`collocations`** *(array of strings, Japanese-only)*: A list of common collocations (word pairings) featuring the target word.
-- **`is_hyogai`** *(boolean)*: True if the target word contains characters outside the standard Jōyō Kanji table.
+- **`is_hyogai`** *(boolean)*: True if the dictionary headword (the kanji part of `root_id`) contains characters outside the Jōyō Kanji table. **Computed by the validator** from `root_id` — a wrong value is auto-corrected by `--fix`.
+- **`hyogai_priority`** *(string)*: Required for hyōgai words, empty otherwise. One of `high` / `mid` / `low` — how often the word is actually written in kanji in modern media (`辻褄` → `high`, `誂える` → `low`). Rendered as a badge on the recognition card's front so review attention can be weighted per card.
 - **`tags`** *(array of strings)*: A list of tags for search and filtering. Korean is allowed here, so tags are filled in **Pass B** together with the other Korean fields.
-- **`audio_path`**, **`status`**, **`synced_to_anki`**, **`anki_note_id`**: driver-managed fields — the pipeline writes them; generation must never set or edit them.
+- **`audio_path`**, **`tts_provider`**, **`tts_voice`**, **`tts_render_version`**, **`status`**, **`synced_to_anki`**, **`anki_note_id`**: driver-managed fields — the pipeline writes them; generation must never set or edit them.
 
 ---
 
@@ -70,9 +77,9 @@ Cards must be packaged inside a root `"cards"` array. An individual card node ha
 - **Contrastive Placement**: If possible, place similar-looking or sounding words together in the same sentence to emphasize usage differences.
 
 ### 3. Morphological Formatting
-- **Root ID Format**: Must use the dictionary base form in the format `Kanji(Yomigana)` (e.g. `躊躇う(ためらう)`).
+- **Root ID Format**: Must use the dictionary base form in the format `Kanji(Yomigana)` (e.g. `躊躇う(ためらう)`). The headword keeps its dictionary **kanji** spelling even when the card surface is kana; a kana headword (`ばてる(ばてる)`) is only for words with no common kanji form ([ADR-0009](decisions/0009-kanji-root-identity-kana-surface.md)).
 - **Standard Orthography**: Follow standard Japanese Jōyō Kanji representations for Okurigana.
-- **Hyōgai Kanji (`is_hyogai`)**: If non-Joyo characters are used, set `is_hyogai: true`.
+- **Hyōgai target surface**: When the headword is hyōgai, write the target word in **kana** in `front` and `target_word` (`気が*とがめた*`, never `気が*咎めた*`), set `is_hyogai: true`, and pick a `hyogai_priority`. Context words keep natural orthography.
 
 ### 4. POS (Part of Speech) Enum Restrictions
 The `pos` attribute must conform to: `MainPOS(SubPOS) - GrammarTag`
@@ -111,3 +118,6 @@ in two tiers:
    reported under `"normalized"` and are **not** failures.
 2. **Hangul (`가-힣`, jamo)** in a Japanese field is a hard failure. It cannot be normalized — the
    offending field must be **regenerated from `root_id` in pure Japanese** (never edited in place).
+3. **Hyōgai policy (ADR-0009)** is mechanical: `is_hyogai` is recomputed from the `root_id`
+   headword against the embedded jōyō table (auto-corrected under `--fix`); a hyōgai kanji in
+   `target_word` and a missing/invalid `hyogai_priority` are hard failures.

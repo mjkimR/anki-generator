@@ -7,7 +7,13 @@
 ## 0. 전제 조건 (기기당 최초 1회)
 
 1. `./setup.sh <private-data-repo-url>` 실행 (의존성 설치, 스킬 심링크 생성, `data/` 클론, DB 초기화가 한 번에 수행됨).
-2. Anki Desktop 및 AnkiConnect 애드온(포트 8765) 실행 — 카드 생성만 이 기기에서 하고 푸시는 다른 기기에서 처리하려면 `.env` 파일에 `ANKI_ENABLED=0`을 설정합니다.
+2. Anki Desktop 및 AnkiConnect 애드온(포트 8765) 실행 — 카드 생성만 이 기기에서 하고 푸시는 다른 기기에서 처리하려면 `.env` 파일에 `ANKI_ENABLED=0`을 설정합니다. Anki 연동 기기에서는 기본 Azure provider를 `.env`에 설정합니다:
+   ```dotenv
+   TTS_PROVIDER=azure
+   AZURE_SPEECH_KEY=<your-key>
+   AZURE_SPEECH_REGION=<your-region>
+   ```
+   Edge를 의도적으로 사용할 때만 `TTS_PROVIDER=edge`로 설정합니다. Provider 실패 시 다른 엔진으로 자동 전환되지 않습니다.
 3. 환경 점검은 `doctor` 명령어로 수행:
    ```bash
    uv run anki-gen doctor
@@ -71,6 +77,8 @@ uv run anki-gen sync-pending
 
 `ANKI_ENABLED=0` 기기(생성 전용)에서는 `data/` 디렉토리를 커밋하고 푸시하는 것으로 작업이 마무리됩니다. 이후 Anki가 연동된 기기에서 `git pull`을 받으면 해당 기기에서 푸시가 처리됩니다.
 
+TTS는 fail-closed 방식입니다. 선택한 provider를 사용할 수 없으면 해당 카드는 음성 없이 푸시되지 않고 pending 상태로 남습니다. 표시된 provider 설정 또는 서비스 오류를 해결한 뒤 `uv run anki-gen sync-pending`을 다시 실행하세요.
+
 ## 4. 백업 및 멀티 기기(Multi-device) 환경
 
 - **백업 = `data/` 디렉토리 안에서 커밋 및 푸시.** 코드 저장소에는 카드 데이터가 포함되지 않습니다 (`.gitignore`로 차단됨).
@@ -100,8 +108,8 @@ alias akg='uv run anki-gen'
 |---|---|
 | `akg doctor` | 시스템 상태가 비정상적일 때 가장 먼저 실행. 환경 설정, DB, 미러링 상태, Anki 연동을 일괄 점검 |
 | `akg sync-pending` | Anki가 꺼진 상태에서 생성되어 대기 중인 카드를 즉시 Anki로 동기화(푸시) |
-| `akg backfill-audio` | 네트워크 오류 등으로 TTS 오디오 없이 생성된 카드의 음성 데이터 복구 |
-| `akg sync-decks` | 듣기(Listening) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
+| `akg backfill-audio` | 이전 버전에서 이미 동기화된 무음 카드의 음성 데이터 복구 |
+| `akg sync-decks` | 듣기(Listening)·표외한자(Hyōgai) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
 | `akg gc-media` | 어떤 카드로도 참조되지 않고 유실된 미디어 파일(mp3)을 일괄 정리 (주기적으로 가끔 실행) |
 | `akg practice weak-words` | 다음에 연습할 단어 — 가장 약한 단어 (Anki 실행 중이면 라이브 통계, 아니면 오프라인 블렌드) |
 | `akg practice stats` | 연습 리포트: 정답률·계속 틀리는 단어 (`--word "単語(よみ)"`로 단어별 이력) |
@@ -122,8 +130,10 @@ alias akg='uv run anki-gen'
 |---|---|
 | 원인을 알 수 없는 문제가 발생함 | 우선 `doctor` 명령어를 실행합니다. 대부분의 경우 해결 방향이나 필요한 후속 명령어를 안내해 줍니다. |
 | 저장소를 새로 클론(clone)한 후 에이전트가 스킬을 인식하지 못함 | `./setup_symlinks.sh` 명령어를 실행합니다. (스킬 심링크 파일은 `.gitignore`에 등록되어 있어 저장소를 새로 클론할 때 자동으로 포함되지 않기 때문입니다.) |
-| 생성된 카드에 음성(오디오)이 나오지 않음 | `backfill-audio` 명령어를 실행하여 복구합니다. (인터넷 연결이 필요합니다.) |
-| 듣기(Listening) 카드가 잘못하여 단어(Vocab) 덱에 보임 | `sync-decks` 명령어를 실행하여 카드 유형에 맞게 덱 배치를 다시 정렬합니다. |
+| 새 카드가 TTS 오류 후 pending으로 남음 | Provider 오류를 해결한 뒤 `sync-pending`을 실행합니다. |
+| 이전 버전에서 동기화된 카드에 음성이 없음 | `backfill-audio`을 실행하여 복구합니다. (인터넷 연결 필요) |
+| 듣기(Listening)·표외한자(Hyōgai) 카드가 잘못하여 단어(Vocab) 덱에 보임 | `sync-decks` 명령어를 실행하여 카드 유형에 맞게 덱 배치를 다시 정렬합니다. |
+| 표외한자 인식 카드가 너무 많게 느껴짐 | `Japanese::Hyogai` 덱(`.env`의 `ANKI_HYOGAI_DECK`)의 신규 카드/일 한도를 낮추세요. 카드 앞면의 high/mid/low 배지가 어느 카드에 신경 쓸지 알려줍니다. |
 | 로컬 DB에서 수동으로 삭제한 카드가 다시 복구됨 | 정상적인 동작입니다. Git에 관리되는 JSONL 미러 파일이 원본 소스 역할을 하므로 다시 불러오게 됩니다. 영구 삭제(tombstone 기능)는 로드맵을 참고하세요. |
 | 다른 기기에서 이미 푸시한 카드가 이 기기에서 중복 푸시될까 염려됨 | 중복 푸시되지 않습니다. 동기화 상태 역시 Git을 통해 기록이 전파되고 안전하게 병합(monotonic merge)되며, Anki 자체의 중복 감지 알고리즘이 이중으로 보호합니다. |
 | 카드의 디자인(스타일/레이아웃)을 수정하고 싶음 | `anki_model/` 폴더의 CSS 및 HTML 파일을 직접 수정합니다. 수정 사항은 다음 동기화 시점에 Anki 앱에 자동으로 반영됩니다. **Anki 앱 내에서 직접 템플릿을 수정하지 마세요.** (다음 동기화 시 저장소의 파일 내용으로 덮어써집니다.) |

@@ -53,7 +53,8 @@ or a full sentence, generate cards and drive the pipeline to completion.
 Produce the **Japanese half** of the card and **nothing Korean at all**, following the
 **[Four Principles]** and the **[Card JSON]** reference below:
 * Fill `front`, `back_reading` (the yomigana-annotated Japanese sentence), `target_word`,
-  `root_id`, `pos`, `components`, `collocations`, `is_hyogai`.
+  `root_id`, `pos`, `components`, `collocations`, `is_hyogai`, and — for hyōgai words —
+  `hyogai_priority`.
 * Leave `back_meaning`, `back_tip`, and `tags` **absent** — they come in Pass B. This pass
   contains no free-form Hangul at all; the fixed `pos` enum literals are the only exception.
 * Every kanji must be Japanese **shinjitai** (新字体, e.g. 圧, 売) and kana only.
@@ -84,6 +85,10 @@ Notes:
   the DB. If Step 1 established this is a deliberate new sense, proceed; otherwise stop and
   confirm with the user before filling Korean — a same-sense card with a new sentence would
   insert as a silent duplicate.
+* `reading_equivalent_roots` on a `need_korean` response: the DB already owns cards under a
+  reading-equivalent identity (e.g. the kana headword ためらう(ためらう) while you wrote
+  躊躇う(ためらう)). Decide per word: the **same word** → adopt the existing root_id (or
+  report the identity split to the user); a genuine **homophone** → proceed as-is.
 
 ### [Step 4] Korean Pass (Pass B — monolingual)
 Add to each listed card **only** these fields:
@@ -101,7 +106,7 @@ to Anki (synthesizing TTS just before each note lands), and archives the working
 
 ### [Step 5] Report
 Report the final summary to the user: cards created, sense splits, sync status, plus any
-`warnings` or `tts_warnings`. Special cases:
+`warnings` or `tts_errors`. Special cases:
 * `anki_online: false` — cards are safely persisted in the DB. They sync automatically on
   the next run with Anki open; to push immediately instead, the user can open Anki and run:
   `uv run anki-gen sync-pending`
@@ -112,16 +117,16 @@ Report the final summary to the user: cards created, sense splits, sync status, 
   with this run's; mention the count.
 * `partial` — some cards failed to push; they remain recoverable via `sync-pending`. Show the
   errors.
-* `tts_warnings` — those cards were created without audio; recover later (network required)
-  via:
-  `uv run anki-gen backfill-audio`
+* `tts_errors` — the selected provider failed. Those cards were deliberately not pushed
+  and remain pending; fix the reported provider/configuration problem, then run
+  `uv run anki-gen sync-pending`.
 * If the driver reports the `data/` backup was refreshed, remind the user to commit &
   push it (`data/` is a separate private repo — commits happen inside it, not here).
 
 ### Utilities (run when relevant, not every time)
 * Environment health check (use when something seems broken, or on first run):
   `uv run anki-gen doctor`
-* Backfill audio for cards created without it (earlier `tts_warnings`):
+* Backfill audio for already-synced silent cards created by older pipeline versions:
   `uv run anki-gen backfill-audio`
 * Clean up orphaned audio files (occasionally, or when the user asks):
   `uv run anki-gen gc-media`
@@ -161,9 +166,18 @@ commands, the deck-registration conversation, and the dry-run-before-apply safet
 
 ### Principle 3: Morphological Reduction & Unique ID
 * **Root_ID format**: reduce even conjugated input to the Weblio/Goo dictionary base form as
-  `基本形漢字(基本形よみがな)` (e.g. `躊躇った` → `躊躇う(ためらう)`).
+  `基本形漢字(基本形よみがな)` (e.g. `躊躇った` → `躊躇う(ためらう)`). The headword keeps
+  its dictionary **kanji** spelling even when the card surface writes the word in kana; use
+  a kana headword (`ばてる(ばてる)`) only when no common kanji form exists.
 * **Orthography**: unify to the standard okurigana of the Japanese jōyō-kanji notation.
-* **Hyōgai kanji (`is_hyogai`)**: set `is_hyogai: true` if a non-jōyō kanji is used.
+* **Hyōgai words (ADR-0009)**: when the headword contains non-jōyō kanji, set
+  `is_hyogai: true` (the validator recomputes this from `root_id` — treat your value as a
+  self-check), write the **target word in kana** in `front`/`target_word`
+  (`気が*とがめた*`, never `気が*咎めた*`), and set `hyogai_priority` to `high`/`mid`/`low`
+  by how often the word is actually written in kanji in modern media (`辻褄` → high,
+  `誂える` → low). Context words in the sentence keep natural orthography (醤油, 噂 stay
+  kanji). The kanji form still reaches the user: the card back shows a 漢字表記 line and a
+  separate recognition card is generated automatically.
 
 ### Principle 4: POS Enum Constraints
 * **Format**: `대분류(세부분류) - 활용/문법`
@@ -191,7 +205,8 @@ senses (Principle 1). Field ownership is strict:
 | `pos` | string | Enum string per Principle 4 (fixed Korean literals) |
 | `components` | string[] | Idioms only: morpheme base forms; otherwise `[]` |
 | `collocations` | string[] | Common chunks featuring the target word; `[]` if none |
-| `is_hyogai` | boolean | `true` when the word uses non-jōyō kanji |
+| `is_hyogai` | boolean | `true` when the `root_id` headword uses non-jōyō kanji (validator recomputes it) |
+| `hyogai_priority` | string | Hyōgai words only: `high`/`mid`/`low` by real-world kanji prevalence; omit (or `""`) otherwise |
 
 ### Fields you write in Pass B (Korean, only after `need_korean`)
 
@@ -203,7 +218,8 @@ senses (Principle 1). Field ownership is strict:
 
 ### Driver-managed — never write or edit
 
-`audio_path`, `status`, `synced_to_anki`, `anki_note_id`, and the retry sidecar
+`audio_path`, `tts_provider`, `tts_voice`, `tts_render_version`, `status`,
+`synced_to_anki`, `anki_note_id`, and the retry sidecar
 `cards/pending/.attempts.json`. The Anki note fields, templates, and CSS are likewise
 code: the pipeline creates the repo-owned note model in Anki and syncs it from the
 git-managed `anki_model/` files — the `*…*` marker becomes a styled span and the
@@ -212,21 +228,23 @@ content.
 
 ## ✍️ Examples
 
-**Example 1 — ordinary verb with a collocation.** Pass A working file
-(`cards/pending/躊躇う.json`):
+**Example 1 — hyōgai verb with a collocation.** Pass A working file
+(`cards/pending/躊躇う.json`) — note the kanji headword in `root_id` but the kana target
+surface, plus the priority:
 
 ```json
 {
   "cards": [
     {
-      "front": "緊迫した交渉の場において、彼は決断を*躊躇った*。",
-      "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。",
-      "target_word": "躊躇った",
+      "front": "緊迫した交渉の場において、彼は決断を*ためらった*。",
+      "back_reading": "緊迫[きんぱく]した 交渉[こうしょう]の 場[ば]において、 彼[かれ]は 決断[けつだん]をためらった。",
+      "target_word": "ためらった",
       "root_id": "躊躇う(ためらう)",
       "pos": "동사(1그룹/자동사) - 활용 없음",
       "components": [],
       "collocations": ["決断を躊躇う"],
-      "is_hyogai": true
+      "is_hyogai": true,
+      "hyogai_priority": "mid"
     }
   ]
 }

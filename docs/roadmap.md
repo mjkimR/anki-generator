@@ -11,19 +11,13 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 
 ### Validate the output-practice loop in real use
 
-- **Outcome:** confirm that live Anki lapse sourcing, kana/kanji identity bridging, dismissals,
-  statistics, and discovery produce useful sessions outside unit tests.
+- **Outcome:** confirm the loop produces useful sessions outside unit tests. Live Anki lapse
+  sourcing is confirmed working (2026-07-21: the `anki-live` source joins lapse counts to
+  `root_id`); kana/kanji identity bridging, dismissals, statistics, and discovery still want
+  real-use exercise.
 - **Exit criteria:** complete representative weak-word and topic sessions with Anki both online
   and offline; record only defects or follow-up work that materially changes the design.
 - **Dependencies:** none.
-
-### Validate listening-card rollout
-
-- **Outcome:** add and route the Listening template in the real collection without disturbing
-  existing vocabulary cards or review history.
-- **Exit criteria:** run `anki-gen sync-decks` or an online push, confirm card counts and deck
-  routing, and set the listening deck's new-card limit.
-- **Dependencies:** Anki Desktop available and synchronized with AnkiWeb.
 
 ### Continue weak-word promotion
 
@@ -69,21 +63,6 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 - **Exit criteria:** batch extraction does not bypass validation, duplicate checks, or the
   existing working-file lifecycle.
 
-### Hyōgai kanji orthography policy and system-wide ID standards
-
-- **Problem:** Currently, `is_hyogai` is only a passive boolean flag (`true`/`false`) without an explicit orthography or ID standard. This causes several inconsistencies across card generation:
-  1. **ID and Deduplication ambiguity (`root_id`, `target_word`, `front`)**: For words using non-Jōyō kanji (e.g. `咎める`), one generation batch might use kanji (`咎める(とがめる)`, `気が咎めた`) while another uses hiragana (`とがめる(とがめる)`, `気がとがめた`). This fragments dictionary identity and breaks deduplication.
-  2. **Orthography conflict (Literary kanji vs. Modern practice)**: Real-world Japanese media often writes Hyōgai kanji in hiragana (e.g., `とがめる`, `うなずく`). However, learners aiming for advanced reading (N1+) still benefit from recognizing the rare kanji forms.
-  3. **Lack of visual feedback**: Anki notes do not receive automatic tags (`표외한자`) or visual badges on the card back to indicate non-Jōyō kanji status.
-- **Outcome:** Establish a unified orthography policy for `is_hyogai` cards that standardizes `root_id` identity, `front` example sentence generation, reading tip annotations, automatic Anki tagging, and visual card rendering.
-- **Exit criteria:**
-  1. **Standardize ID & Orthography Policy**: Define explicit schema rules for `root_id`, `target_word`, and `front`:
-     - Determine whether `root_id` strictly retains dictionary kanji `漢字(よみがな)` regardless of `front` surface representation.
-     - Settle whether `front` defaults to hiragana (following general usage) or kanji, and whether kanji recognition should be split into a separate tip/card or included in `back_tip`.
-  2. **Automated Anki Tagging**: `push_card` automatically appends the `표외한자` tag to Anki notes when `is_hyogai: true`.
-  3. **Visual Card Model Update**: Update `anki_model` (`back.html`, `style.css`) to render a clear visual `[표외한자]` badge on card backs.
-
-
 ## Later
 
 ### Card update and delete synchronization
@@ -115,8 +94,6 @@ These ideas remain deliberately inactive until their triggering need appears:
 
 - **Unattended Anki sync:** first consider guarded scheduling on the Anki machine; any headless
   AnkiWeb path must abort on a full-sync requirement.
-- **TTS engine upgrade:** revisit only if kana-based edge-tts prosody becomes a practical
-  learning problem; preserve the push-time synthesis seam and voice-aware cache key.
 - **Canonical kana-to-kanji identity:** add judged canonical links lazily if repeated
   reading-only reviews become burdensome; do not run bulk model enrichment.
 - **Batch-agent promotion:** wait until conversational promotion sessions establish a stable

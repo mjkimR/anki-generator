@@ -79,7 +79,9 @@ no new generation session is expected.
 
 TTS is deliberately absent from generation-only work. Audio is generated immediately before
 push on the machine that owns the Anki collection. A failed synthesis leaves an empty
-`audio_path`; `anki-gen backfill-audio` repairs the existing note later.
+`audio_path` and the card pending; after fixing the selected provider, `anki-gen sync-pending`
+retries both synthesis and push. `anki-gen backfill-audio` remains for older notes that were
+already synced without audio.
 
 ## Multi-machine discipline
 

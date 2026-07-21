@@ -60,12 +60,18 @@ See [skill drivers](architecture/skill-drivers.md),
   See [ADR-0006](decisions/0006-repository-owned-anki-model.md).
 - Keep orchestration in thin skill drivers over a shared platform.
   See [ADR-0007](decisions/0007-shared-platform-and-skill-drivers.md).
+- Card identity uses the dictionary kanji headword; a hyōgai target's card surface is
+  kana, `is_hyogai` is validator-computed (never model-asserted), and kanji recognition
+  is a separate flag-free card throttled by `hyogai_priority`.
+  See [ADR-0009](decisions/0009-kanji-root-identity-kana-surface.md).
+- Select one TTS provider explicitly and require valid audio before an Anki push.
+  See [ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md).
 
 ## Runtime modes
 
 On an Anki-equipped machine, a pipeline run persists the card, synthesizes audio, pushes
-the note, records its Anki note id, drains older pending rows, routes listening cards, and
-refreshes the mirror. When Anki is unavailable, the same run completes through persistence
+the note, records its Anki note id, drains older pending rows, routes listening and hyōgai
+recognition cards into their decks, and refreshes the mirror. When Anki is unavailable, the same run completes through persistence
 and mirror export; a later online run drains the backlog.
 
 A generation-only machine sets `ANKI_ENABLED=0`. It never attempts Anki operations and

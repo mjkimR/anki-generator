@@ -14,6 +14,14 @@
    `data/` clone + DB init, all in one).
 2. Anki Desktop + the AnkiConnect add-on (port 8765) are running — if this machine will
    only generate cards and another machine will push, set `ANKI_ENABLED=0` in `.env`.
+   On an Anki-equipped machine, configure the default Azure provider in `.env`:
+   ```dotenv
+   TTS_PROVIDER=azure
+   AZURE_SPEECH_KEY=<your-key>
+   AZURE_SPEECH_REGION=<your-region>
+   ```
+   Set `TTS_PROVIDER=edge` only when Edge is intentionally desired. Provider failures do
+   not fall back automatically.
 3. Verify with the doctor:
    ```bash
    uv run anki-gen doctor
@@ -85,6 +93,10 @@ uv run anki-gen sync-pending
 On an `ANKI_ENABLED=0` (generation-only) machine, committing & pushing `data/` *is* the
 wrap-up — an Anki-equipped machine picks the cards up from there after a pull.
 
+TTS is fail-closed: if the selected provider is unavailable, the affected card is not
+pushed silently and remains pending. Fix the reported provider configuration or service
+error, then rerun `uv run anki-gen sync-pending`.
+
 ## 4. Backup & multiple machines
 
 - **Backup = commit & push inside `data/`.** Card data never enters the code repo
@@ -125,8 +137,8 @@ alias akg='uv run anki-gen'
 |---|---|
 | `akg doctor` | First stop when anything seems off. Checks env/DB/mirror/Anki |
 | `akg sync-pending` | Push cards made while Anki was closed, right now |
-| `akg backfill-audio` | Repair cards that synced silent (TTS failed) |
-| `akg sync-decks` | Re-run routing when Listening cards linger in the vocab deck |
+| `akg backfill-audio` | Repair already-synced silent cards from older versions |
+| `akg sync-decks` | Re-run routing when Listening or Hyōgai cards linger in the vocab deck |
 | `akg gc-media` | Delete mp3s no card references (occasionally) |
 | `akg practice weak-words` | What to practice next — your weakest words (uses live Anki stats when open, offline blend otherwise) |
 | `akg practice stats` | Practice report: correct rate, struggling words (`--word "単語(よみ)"` for one word's history) |
@@ -149,8 +161,10 @@ you'll rarely type them yourself.
 |---|---|
 | Something's wrong (cause unknown) | `doctor` first. It usually tells you the fix direction too |
 | After a fresh clone, Claude doesn't know the skills | `./setup_symlinks.sh` (the symlinks are gitignored, so they don't travel with a clone) |
-| A card has no audio | `backfill-audio` (network required) |
-| Listening cards showing in the vocab deck | `sync-decks` |
+| A new card is pending after a TTS error | Fix the provider error, then run `sync-pending` |
+| An older synced card has no audio | `backfill-audio` (network required) |
+| Listening/Hyōgai cards showing in the vocab deck | `sync-decks` |
+| Hyōgai recognition cards feel like too much | They live in `Japanese::Hyogai` (set via `ANKI_HYOGAI_DECK` in `.env`) — lower that deck's new-cards/day limit; the high/mid/low badge on each card tells you which ones deserve real attention |
 | A card deleted from the DB came back | Working as designed — the git mirror is the source, so it resurrects. Real deletion (tombstones) is on the roadmap |
 | Worried a card pushed on another machine gets re-pushed here | It won't — sync state travels via git and merges monotonically, with Anki's duplicate detection as a second net |
 | Want to change the card design | Edit the CSS/HTML in `anki_model/` → auto-synced to Anki on the next push. Don't edit inside the Anki app (the repo version overwrites it on the next sync) |

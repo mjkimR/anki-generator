@@ -15,6 +15,8 @@ ADRs preserve **why** a durable decision was made. Current behavior remains docu
 | [0006](0006-repository-owned-anki-model.md) | Accepted | Own the Anki note model in git |
 | [0007](0007-shared-platform-and-skill-drivers.md) | Accepted | Build thin skill drivers over a shared platform |
 | [0008](0008-shrink-first-legacy-migration.md) | Accepted | Shrink legacy decks instead of mass-migrating them |
+| [0009](0009-kanji-root-identity-kana-surface.md) | Accepted | Kanji root identity, kana surfaces for hyōgai words, sentence-based recognition card |
+| [0010](0010-explicit-fail-closed-tts-provider.md) | Accepted | Select one TTS provider explicitly and fail closed |
 
 ## When to add an ADR
 

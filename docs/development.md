@@ -35,8 +35,9 @@ a designed-for normal state everywhere in this codebase, never an error path.
 ## Layout
 
 - `src/anki_generator/config.py` — all paths and env vars (`.env`, gitignored, per-machine):
-  `ANKI_CONNECT_URL`, `ANKI_DEFAULT_DECK`, `ANKI_LISTENING_DECK`, `ANKI_NOTE_MODEL`,
-  `ANKI_ENABLED` (`0` = generation-only machine), `TTS_DEFAULT_VOICE`. Never hardcode
+  `ANKI_CONNECT_URL`, `ANKI_DEFAULT_DECK`, `ANKI_LISTENING_DECK`, `ANKI_HYOGAI_DECK`,
+  `ANKI_NOTE_MODEL`, `ANKI_ENABLED` (`0` = generation-only machine), `TTS_PROVIDER`,
+  `TTS_DEFAULT_VOICE`. Never hardcode
   paths or deck names elsewhere — add them here.
 - `src/anki_generator/cli.py` — the `anki-gen` Click entry point; the ONLY way the
   packages are invoked (they have no `__main__.py` and no standalone execution path).
@@ -97,8 +98,11 @@ an explicit user decision and a superseding ADR.
   (`synced_to_anki` only ratchets up)
   ([ADR-0002](decisions/0002-merge-then-mirror-sync.md)).
 - **TTS happens at push time, never at generation time** — audio is made on the machine
-  that pushes. It speaks `reading_to_kana(back_reading)` (validated kana), never raw
-  kanji. Output filename `tts_<md5(voice+text)>.mp3` is the cache key.
+  that pushes. `TTS_PROVIDER` explicitly selects `azure` (default) or `edge`; provider
+  failures never fall back or push a silent note. Azure renders whole annotated
+  pronunciation units as SSML substitutions; Edge speaks `reading_to_kana(back_reading)`.
+  The cache key includes provider, renderer version, voice, and annotated input
+  ([ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md)).
 - **`audio_path` stores a bare filename**, resolved against `media/` on read.
 - **Repo-owned note model**: templates Anki is missing are *added*
   (`modelTemplateAdd`), never recreated; `Card 1` stays ordinal 0; a same-named model
