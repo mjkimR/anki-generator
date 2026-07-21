@@ -43,9 +43,14 @@ def patch_attempts(monkeypatch, tmp_path):
     return sidecar
 
 def fake_tts_ok(monkeypatch):
+    output = config.MEDIA_DIR / "tts_fake.mp3"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"audio")
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
                         lambda text, output_path=None, voice=None:
-                        {"success": True, "output_path": "/nonexistent/tts_fake.mp3"})
+                        {"success": True, "output_path": str(output),
+                         "provider": "azure", "voice": "ja-JP-NanamiNeural",
+                         "render_version": "azure-ssml-v2"})
 
 def fake_anki_online(monkeypatch, deck="TestDeck"):
     def fake_invoke(action, **params):
@@ -55,6 +60,8 @@ def fake_anki_online(monkeypatch, deck="TestDeck"):
             return []  # first contact — the repo-owned model gets created
         if action == "createModel":
             return {}
+        if action == "storeMediaFile":
+            return params["filename"]
         if action == "addNote":
             return 12345
         raise AssertionError(f"unexpected action {action}")
@@ -152,6 +159,7 @@ def test_happy_path_persists_syncs_archives(tmp_path, monkeypatch):
     exported = json.loads(next((data_dir / "cards").glob("cards-*.jsonl")).read_text(encoding="utf-8"))
     assert exported["root_id"] == "妥協(だきょう)"
     assert exported["synced_to_anki"] == 1
+    assert exported["tts_provider"] == "azure"
 
     # DB-first persistence, then marked synced with the Anki note id captured.
     conn = open_test_db(db)
@@ -176,7 +184,7 @@ def test_tts_receives_annotated_reading_not_raw_kanji(tmp_path, monkeypatch):
     def fake_synth(text, output_path=None, voice=None):
         spoken.append(text)
         out = tmp_path / "tts_fake.mp3"
-        out.touch()
+        out.write_bytes(b"audio")
         return {"success": True, "output_path": str(out)}
     monkeypatch.setattr(pipeline.tts_helper, "synthesize", fake_synth)
 
@@ -184,6 +192,48 @@ def test_tts_receives_annotated_reading_not_raw_kanji(tmp_path, monkeypatch):
     result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
     assert code == 0 and result["status"] == "done"
     assert spoken == ["彼[かれ]は 妥協[だきょう]を 拒[こば]んだ。"]
+
+def test_tts_failure_blocks_push_and_leaves_card_pending(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    fake_anki_online(monkeypatch)
+    monkeypatch.setattr(
+        pipeline.tts_helper, "synthesize",
+        lambda text, output_path=None, voice=None:
+        {"success": False, "error": "Azure unavailable", "provider": "azure",
+         "voice": "ja-JP-NanamiNeural", "render_version": "azure-ssml-v2",
+         "error_code": "azure_canceled", "error_stage": "provider_response",
+         "retryable": True,
+         "error_details": {"service_error_code": "ServiceUnavailable"}})
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+
+    result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+
+    assert code == 1 and result["status"] == "partial"
+    assert result["synced_count"] == 0
+    assert result["tts_errors"][0]["root_id"] == "妥協(だきょう)"
+    assert result["tts_errors"][0]["error_code"] == "azure_canceled"
+    assert result["tts_errors"][0]["error_details"]["service_error_code"] \
+        == "ServiceUnavailable"
+    pending = db_helper.fetch_pending(db_path=db)
+    assert len(pending) == 1 and pending[0]["audio_path"] == ""
+
+def test_tts_false_success_with_missing_output_blocks_push(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    fake_anki_online(monkeypatch)
+    monkeypatch.setattr(
+        pipeline.tts_helper, "synthesize",
+        lambda text, output_path=None, voice=None:
+        {"success": True, "output_path": str(tmp_path / "missing.mp3"),
+         "provider": "azure", "voice": "ja-JP-NanamiNeural",
+         "render_version": "azure-ssml-v2"})
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+
+    result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+
+    assert code == 1 and result["synced_count"] == 0
+    assert result["tts_errors"][0]["error_code"] == "tts_invalid_output"
 
 def test_offline_persists_and_sync_pending_recovers(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")

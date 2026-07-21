@@ -9,7 +9,7 @@ from anki_generator import (
 from .core import (
     MAX_ATTEMPTS, normalize_shape, load_json, bump_attempts, clear_attempts,
     save_json, connect_anki, _ensure_local_audio, export_backup, archive_file,
-    _route_listening
+    _route_listening, _route_hyogai, _anki_error
 )
 
 def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
@@ -73,6 +73,17 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
                 " NOTE existing_cards: these root_id(s) already own other card(s) in the "
                 "DB — confirm each new card is a genuinely different sense, not a "
                 "duplicate, before filling Korean.")
+        # Identity-split safety net (ADR-0009): a reading-equivalent root already owning
+        # cards means this word may already exist under another spelling of its identity
+        # (kana headword vs kanji headword).
+        reading_dupes = db_helper.find_reading_equivalent_roots(cards, db_path=db_path)
+        if reading_dupes:
+            result["reading_equivalent_roots"] = reading_dupes
+            result["message"] += (
+                " NOTE reading_equivalent_roots: the DB already owns cards under a "
+                "reading-equivalent identity. Decide per word: same word → reuse the "
+                "existing root_id (or report the split to the user); genuine homophone "
+                "→ proceed.")
         warnings = vres.get("warnings")
         if warnings:
             result["warnings"] = warnings
@@ -93,14 +104,16 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
         anki_online, model_name, anki_error = False, None, "disabled (ANKI_ENABLED=0)"
     synced_count = duplicate_count = 0
     push_errors = []
-    tts_warnings = []
+    tts_errors = []
     if anki_online:
         for card in cards:
             if card.get("synced_to_anki") == 1:
                 continue
-            warn = _ensure_local_audio(card, db_path=db_path)
-            if warn:
-                tts_warnings.append(warn)
+            tts_error = _ensure_local_audio(card, db_path=db_path)
+            if tts_error:
+                tts_errors.append(tts_error)
+                push_errors.append(tts_error)
+                continue
             try:
                 outcome, note_id = anki_connector.push_card(card, deck_name, model_name)
                 card["synced_to_anki"] = 1
@@ -114,7 +127,7 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
                 else:
                     synced_count += 1
             except Exception as e:
-                push_errors.append({"root_id": card.get("root_id"), "error": str(e)})
+                push_errors.append(_anki_error(card, e))
     save_json(path, data)
 
     backlog_synced = 0
@@ -124,20 +137,24 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
         for pcard in db_helper.fetch_pending(db_path=db_path):
             if (pcard.get("root_id"), pcard.get("front")) in just_attempted:
                 continue
-            warn = _ensure_local_audio(pcard, db_path=db_path)
-            if warn:
-                tts_warnings.append(warn)
+            tts_error = _ensure_local_audio(pcard, db_path=db_path)
+            if tts_error:
+                backlog_errors.append(tts_error)
+                continue
             try:
                 _, note_id = anki_connector.push_card(pcard, deck_name, model_name)
                 db_helper.mark_synced(pcard["root_id"], pcard["front"],
                                       note_id=note_id, db_path=db_path)
                 backlog_synced += 1
             except Exception as e:
-                backlog_errors.append({"root_id": pcard.get("root_id"), "error": str(e)})
+                backlog_errors.append(_anki_error(pcard, e))
 
     routed_listening, routing_error = (0, None)
+    routed_hyogai = 0
     if anki_online:
         routed_listening, routing_error = _route_listening(deck_name)
+        routed_hyogai, hyogai_routing_error = _route_hyogai(deck_name)
+        routing_error = routing_error or hyogai_routing_error
 
     archived_to = None
     if db_result.get("success") and not db_result.get("skipped"):
@@ -146,7 +163,7 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
     backup = cast(BackupResult, export_backup(db_path=db_path))
 
     result = {
-        "status": "partial" if push_errors else "done",
+        "status": "partial" if push_errors or backlog_errors else "done",
         "persisted": db_result,
         "anki_online": anki_online,
         "synced_count": synced_count,
@@ -185,19 +202,23 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
         result["routed_listening"] = routed_listening
         result["message"] += (f" Routed {routed_listening} listening card(s) → "
                               f"{config.ANKI_LISTENING_DECK}.")
+    if routed_hyogai:
+        result["routed_hyogai"] = routed_hyogai
+        result["message"] += (f" Routed {routed_hyogai} hyōgai recognition card(s) → "
+                              f"{config.ANKI_HYOGAI_DECK}.")
     if routing_error:
         result["routing_warning"] = routing_error
-        result["message"] += (" Listening-card deck routing hit an error (cards are in "
+        result["message"] += (" Template deck routing hit an error (cards are in "
                               "Anki, just the vocab deck) — rerun 'anki-gen sync-decks'.")
     if backup.get("written") or backup.get("removed"):
         result["message"] += " The data/ backup was refreshed — remind the user to commit it."
-    if tts_warnings:
-        result["tts_warnings"] = tts_warnings
-        result["message"] += (" Some cards lack audio — recover later via "
-                              "'anki-gen backfill-audio'.")
+    if tts_errors:
+        result["tts_errors"] = tts_errors
+        result["message"] += (" TTS failed for some cards; they were not pushed and "
+                              "remain pending for 'anki-gen sync-pending'.")
     warnings = vres.get("warnings")
     if warnings:
         result["warnings"] = warnings
     if archived_to:
         result["archived_to"] = archived_to
-    return cast(CmdRunResponse, result), (1 if push_errors else 0)
+    return cast(CmdRunResponse, result), (1 if push_errors or backlog_errors else 0)

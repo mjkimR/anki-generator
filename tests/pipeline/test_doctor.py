@@ -96,6 +96,20 @@ def test_doctor_generation_only_marks_anki_disabled(tmp_path, monkeypatch):
     assert not any(c["check"] == "anki_notes" for c in result["checks"])
     assert "message" not in result  # disabled is intentional, not a warning
 
+def test_doctor_rejects_unconfigured_selected_azure_provider(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "azure")
+    monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+    monkeypatch.delenv("AZURE_SPEECH_REGION", raising=False)
+    fake_anki_offline(monkeypatch)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+
+    assert code == 1 and result["status"] == "error"
+    check = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert check["ok"] is False
+    assert "AZURE_SPEECH_KEY" in check["detail"]
+
 def test_doctor_flags_attempts_mirror_drift(tmp_path, monkeypatch):
     patch_backup(monkeypatch, tmp_path)  # empty data dir — no attempts mirror
     fake_anki_offline(monkeypatch)

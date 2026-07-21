@@ -78,6 +78,8 @@ def test_reconcile_merges_sync_state_monotonically(tmp_path):
                   created_at="2026-07-01 00:00:00"),
         make_card("先方(せんぽう)", "先方の意向を確認する。", synced_to_anki=1,
                   anki_note_id=222, audio_path="tts_abc.mp3",
+                  tts_provider="azure", tts_voice="ja-JP-NanamiNeural",
+                  tts_render_version="azure-ssml-v2",
                   created_at="2026-07-01 00:00:00"),
     ]
     (data_dir / "cards").mkdir(parents=True, exist_ok=True)
@@ -96,6 +98,13 @@ def test_reconcile_merges_sync_state_monotonically(tmp_path):
     # Sync state achieved on the other machine flows in: no re-push, note id usable here.
     assert rows["先方(せんぽう)"][1:3] == (1, 222)
     assert rows["先方(せんぽう)"][3] == "tts_abc.mp3"
+    conn = open_test_db(db)
+    tts = conn.execute(
+        "SELECT tts_provider, tts_voice, tts_render_version FROM cards"
+        " WHERE root_id = '先方(せんぽう)'"
+    ).fetchone()
+    conn.close()
+    assert tts == ("azure", "ja-JP-NanamiNeural", "azure-ssml-v2")
     assert fetch_pending(db_path=db) == []
 
 def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):

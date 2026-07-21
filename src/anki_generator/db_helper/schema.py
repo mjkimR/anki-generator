@@ -13,8 +13,12 @@ CREATE TABLE IF NOT EXISTS cards (
     components TEXT,
     collocations TEXT,
     is_hyogai INTEGER DEFAULT 0,
+    hyogai_priority TEXT DEFAULT '',
     tags TEXT,
     audio_path TEXT,
+    tts_provider TEXT,
+    tts_voice TEXT,
+    tts_render_version TEXT,
     anki_note_id INTEGER,
     synced_to_anki INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -25,7 +29,9 @@ CREATE TABLE IF NOT EXISTS cards (
 CARD_COLUMNS = (
     "root_id", "front", "back_reading", "back_meaning", "back_tip",
     "target_word", "pos", "components", "collocations", "is_hyogai",
-    "tags", "audio_path", "anki_note_id", "synced_to_anki",
+    "hyogai_priority", "tags", "audio_path",
+    "tts_provider", "tts_voice", "tts_render_version",
+    "anki_note_id", "synced_to_anki",
 )
 REQUIRED_CARD_FIELDS = ("root_id", "front", "back_reading", "target_word", "pos")
 

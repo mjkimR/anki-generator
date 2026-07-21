@@ -16,6 +16,7 @@ from anki_generator.db_helper import (
     mark_synced,
     fetch_pending,
     split_legacy_back,
+    set_audio_metadata,
 )
 from tests.db_support import open_test_db
 
@@ -106,6 +107,29 @@ def test_audio_path_stored_as_bare_name_and_resolved(tmp_path, monkeypatch):
     conn.close()
     assert stored == "tts_abc.mp3"
     assert fetch_pending(db_path=db)[0]["audio_path"] == str(media_dir / "tts_abc.mp3")
+
+def test_audio_metadata_is_stored_atomically(tmp_path):
+    db = str(tmp_path / "test.db")
+    insert_card_records([make_card("妥協(だきょう)", "妥協を拒んだ。")], db_path=db)
+
+    assert set_audio_metadata(
+        "妥協(だきょう)", "妥協を拒んだ。", "/tmp/tts_new.mp3",
+        provider="azure", voice="ja-JP-NanamiNeural",
+        render_version="azure-ssml-v2", db_path=db) is True
+    conn = open_test_db(db)
+    row = conn.execute(
+        "SELECT audio_path, tts_provider, tts_voice, tts_render_version FROM cards"
+    ).fetchone()
+    conn.close()
+    assert row == ("tts_new.mp3", "azure", "ja-JP-NanamiNeural", "azure-ssml-v2")
+
+    set_audio_metadata("妥協(だきょう)", "妥協を拒んだ。", "", db_path=db)
+    conn = open_test_db(db)
+    row = conn.execute(
+        "SELECT audio_path, tts_provider, tts_voice, tts_render_version FROM cards"
+    ).fetchone()
+    conn.close()
+    assert row == ("", None, None, None)
 
 def test_extract_card_lemmas_collapses_conjugation_and_drops_noise():
     counts = db_helper.extract_card_lemmas("失敗を 咎[と가]められた。".replace("가", "が"))
@@ -265,7 +289,8 @@ def test_oldest_schema_migration(tmp_path):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
     row = conn.execute("SELECT root_id, back_reading, back_meaning, back_tip FROM cards").fetchone()
     conn.close()
-    assert {"id", "back_reading", "back_meaning", "back_tip"} <= columns
+    assert {"id", "back_reading", "back_meaning", "back_tip", "tts_provider",
+            "tts_voice", "tts_render_version"} <= columns
     assert row == ("妥協(だきょう)", "よみ", "타협", "팁")
 
     # And a second sense can now be added

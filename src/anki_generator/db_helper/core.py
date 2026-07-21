@@ -127,6 +127,12 @@ def _ensure_retired_columns(conn):
                 ) THEN 'promoted' ELSE 'manual' END
             WHERE status = 'retired'""")
 
+def _ensure_tts_columns(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
+    for name in ("tts_provider", "tts_voice", "tts_render_version"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE cards ADD COLUMN {name} TEXT")
+
 def split_legacy_back(back):
     def trim(s):
         s = re.sub(r"^(?:\s|<br\s*/?>)+", "", s, flags=re.IGNORECASE)
@@ -163,6 +169,9 @@ def ensure_schema(conn):
     if "id" in columns and "back_reading" in columns:
         if "anki_note_id" not in columns:
             cursor.execute("ALTER TABLE cards ADD COLUMN anki_note_id INTEGER")
+        if "hyogai_priority" not in columns:
+            cursor.execute("ALTER TABLE cards ADD COLUMN hyogai_priority TEXT DEFAULT ''")
+        _ensure_tts_columns(conn)
         return
 
     legacy_cols = [row[1] for row in cursor.execute("PRAGMA table_info(cards)")]
@@ -175,7 +184,8 @@ def ensure_schema(conn):
             reading, meaning, tip = split_legacy_back(record.pop("back", ""))
             record.update({"back_reading": reading, "back_meaning": meaning, "back_tip": tip})
         for col in CARD_COLUMNS:
-            record.setdefault(col, None if col == "anki_note_id" else "")
+            nullable = {"anki_note_id", "tts_provider", "tts_voice", "tts_render_version"}
+            record.setdefault(col, None if col in nullable else "")
         record.setdefault("created_at", None)
         cursor.execute(
             f"""INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
@@ -252,6 +262,23 @@ def check_word(word, db_path=None):
             if derived and derived != base:
                 keys.add(derived)
                 keys.add(normalize_known_word(base, derived))
+        # ADR-0009 reading bridge: surface cards owned under a reading-equivalent
+        # identity — a kana headword for a kanji query (躊躇う → ためらう(ためらう)'s
+        # cards) or any homophone root when the query itself is kana. Informational:
+        # the agent judges whether it is the same word or a genuine homophone.
+        reading_keys = {k for k in (reading, derived) if k}
+        if not KANJI_RE.search(base):
+            reading_keys.add(base)
+        seen_cards = {(r[0], r[1]) for r in rows}
+        reading_rows = []
+        for rk in sorted(reading_keys):
+            for r in cursor.execute(
+                    "SELECT root_id, front, back_reading, back_meaning FROM cards"
+                    " WHERE root_id LIKE '%(' || ? || ')' ORDER BY id", (rk,)):
+                if (r[0], r[1]) not in seen_cards:
+                    seen_cards.add((r[0], r[1]))
+                    reading_rows.append(r)
+
         placeholders = ", ".join("?" for _ in keys)
         known_rows = cursor.execute(
             f"SELECT kind, word, source_deck, status, lapses FROM known_words"
@@ -272,7 +299,7 @@ def check_word(word, db_path=None):
         # Surface the guess: a kana match found through it may be a homophone, so the
         # agent can weigh it (informational, same rule as reading-only coverage matches).
         known_legacy["reading_checked"] = derived
-    return {
+    result = {
         "success": True,
         "exists": bool(rows),
         "count": len(rows),
@@ -282,6 +309,49 @@ def check_word(word, db_path=None):
         ],
         "known_legacy": known_legacy,
     }
+    if reading_rows:
+        result["reading_matches"] = [
+            {"root_id": r[0], "front": r[1], "back_reading": r[2], "back_meaning": r[3]}
+            for r in reading_rows
+        ]
+    return result
+
+_ROOT_ID_RE = re.compile(r"^([^(]+)\(([^)]+)\)$")
+
+def _root_reading(root_id):
+    m = _ROOT_ID_RE.match(root_id or "")
+    return m.group(2) if m else None
+
+def _is_kana_root(root_id):
+    """True for a degenerate kana headword — ためらう(ためらう) — where the kanji part
+    carries no kanji and therefore IS the reading."""
+    m = _ROOT_ID_RE.match(root_id or "")
+    return bool(m) and not KANJI_RE.search(m.group(1))
+
+def find_reading_equivalent_roots(cards, db_path=None):
+    """{new_root_id: [existing_root_ids]} where a DB root shares the (よみがな) reading
+    with a new card's root and at least one side is a kana headword — the ADR-0009
+    identity split (躊躇う(ためらう) arriving while ためらう(ためらう) owns cards, or
+    vice versa). Two *kanji* headwords sharing a reading are legitimate homophones
+    (絞る/搾る) and stay silent; a kana headword cannot make that distinction, so every
+    such collision is surfaced for the agent to resolve."""
+    out = {}
+    roots = [r for r in dict.fromkeys(c.get("root_id") for c in cards) if r]
+    if not roots:
+        return out
+    with connection(db_path) as conn:
+        for root in roots:
+            reading = _root_reading(root)
+            if not reading:
+                continue
+            rows = conn.execute(
+                "SELECT DISTINCT root_id FROM cards"
+                " WHERE root_id != ? AND root_id LIKE '%(' || ? || ')'",
+                (root, reading)).fetchall()
+            matches = [r[0] for r in rows if _is_kana_root(r[0]) or _is_kana_root(root)]
+            if matches:
+                out[root] = matches
+    return out
 
 def count_other_senses(cards, db_path=None):
     """{root_id: n} of DB cards under the same root_id whose front is NOT in the given
@@ -314,10 +384,19 @@ def mark_synced(root_id, front, note_id=None, db_path=None):
     return updated
 
 def set_audio_path(root_id, front, audio_path, db_path=None):
+    return set_audio_metadata(root_id, front, audio_path, db_path=db_path)
+
+def set_audio_metadata(root_id, front, audio_path, provider=None, voice=None,
+                       render_version=None, db_path=None):
     with transaction(db_path) as conn:
         cursor = conn.execute(
-            "UPDATE cards SET audio_path = ? WHERE root_id = ? AND front = ?",
-            (Path(audio_path).name if audio_path else "", root_id, front),
+            "UPDATE cards SET audio_path = ?, tts_provider = ?, tts_voice = ?,"
+            " tts_render_version = ? WHERE root_id = ? AND front = ?",
+            (Path(audio_path).name if audio_path else "",
+             provider if audio_path else None,
+             voice if audio_path else None,
+             render_version if audio_path else None,
+             root_id, front),
         )
         updated = cursor.rowcount > 0
     return updated
@@ -419,7 +498,22 @@ _RECONCILE_SQL = f"""
                              COALESCE(excluded.synced_to_anki, 0)),
         anki_note_id = COALESCE(cards.anki_note_id, excluded.anki_note_id),
         audio_path = CASE WHEN cards.audio_path IS NULL OR cards.audio_path = ''
-                          THEN excluded.audio_path ELSE cards.audio_path END
+                          THEN excluded.audio_path ELSE cards.audio_path END,
+        tts_provider = CASE
+            WHEN cards.audio_path IS NULL OR cards.audio_path = ''
+                 OR cards.audio_path = excluded.audio_path
+            THEN COALESCE(cards.tts_provider, excluded.tts_provider)
+            ELSE cards.tts_provider END,
+        tts_voice = CASE
+            WHEN cards.audio_path IS NULL OR cards.audio_path = ''
+                 OR cards.audio_path = excluded.audio_path
+            THEN COALESCE(cards.tts_voice, excluded.tts_voice)
+            ELSE cards.tts_voice END,
+        tts_render_version = CASE
+            WHEN cards.audio_path IS NULL OR cards.audio_path = ''
+                 OR cards.audio_path = excluded.audio_path
+            THEN COALESCE(cards.tts_render_version, excluded.tts_render_version)
+            ELSE cards.tts_render_version END
 """
 
 def _reconcile_cards(conn, cards):
@@ -442,8 +536,12 @@ def _reconcile_cards(conn, cards):
                 json.dumps(card.get("components", []), ensure_ascii=False),
                 json.dumps(card.get("collocations", []), ensure_ascii=False),
                 1 if card.get("is_hyogai") else 0,
+                card.get("hyogai_priority") or "",
                 json.dumps(card.get("tags", []), ensure_ascii=False),
                 Path(audio).name if audio else "",
+                card.get("tts_provider"),
+                card.get("tts_voice"),
+                card.get("tts_render_version"),
                 card.get("anki_note_id"),
                 card.get("synced_to_anki", 0),
                 card.get("created_at"),

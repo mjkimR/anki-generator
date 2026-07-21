@@ -28,11 +28,25 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
     except Exception as e:
         add("joyokanji", False, str(e))
 
-    try:
-        import edge_tts  # noqa: F401
-        add("edge-tts", True)
-    except Exception as e:
-        add("edge-tts", False, str(e))
+    if not config.ANKI_ENABLED:
+        add("tts_provider", True,
+            f"{config.TTS_PROVIDER} (deferred; ANKI_ENABLED=0)")
+    else:
+        try:
+            provider = core.tts_helper.resolve_provider()
+            if provider == "azure":
+                import os
+                if not os.getenv("AZURE_SPEECH_KEY") or not os.getenv("AZURE_SPEECH_REGION"):
+                    raise RuntimeError(
+                        "AZURE_SPEECH_KEY and AZURE_SPEECH_REGION must both be configured")
+                if core.tts_helper.core._load_azure_speech() is None:
+                    raise RuntimeError("azure-cognitiveservices-speech is not installed")
+            elif core.tts_helper.core._load_edge_tts() is None:
+                raise RuntimeError("edge-tts is not installed")
+            add("tts_provider", True,
+                f"{provider}, voice={config.TTS_DEFAULT_VOICE}, automatic fallback disabled")
+        except Exception as e:
+            add("tts_provider", False, str(e))
 
     try:
         with db_helper.connection(db_path) as conn:

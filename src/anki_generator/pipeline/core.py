@@ -81,20 +81,84 @@ def _tts_text(card):
     reading = card.get("back_reading", "")
     return reading if reading else card.get("front", "")
 
-def _ensure_local_audio(card, db_path=None):
+def _audio_matches_current_renderer(card):
     audio = card.get("audio_path", "")
-    if audio and Path(audio).exists():
+    if not audio or not Path(audio).exists():
+        return False
+    try:
+        expected = tts_helper.synthesis_metadata()
+    except ValueError:
+        return False
+    return all((
+        card.get("tts_provider") == expected["provider"],
+        card.get("tts_voice") == expected["voice"],
+        card.get("tts_render_version") == expected["render_version"],
+    ))
+
+def _tts_error(card, result):
+    error = {
+        "root_id": card.get("root_id"),
+        "error": result.get("error", "Unknown TTS failure"),
+        "error_code": result.get("error_code", "tts_unknown"),
+        "error_stage": result.get("error_stage", "unknown"),
+        "retryable": result.get("retryable", False),
+        "provider": result.get("provider"),
+        "voice": result.get("voice"),
+        "render_version": result.get("render_version"),
+    }
+    if result.get("error_details"):
+        error["error_details"] = result["error_details"]
+    return error
+
+def _anki_error(card, exception):
+    is_audio = isinstance(exception, anki_connector.core.AudioUploadError)
+    return {
+        "root_id": card.get("root_id"),
+        "error": str(exception),
+        "error_code": "anki_audio_upload_failed" if is_audio else "anki_push_failed",
+        "error_stage": "anki_media_upload" if is_audio else "anki_note_push",
+        "retryable": is_audio,
+        "error_details": {
+            "exception_type": type(exception).__name__,
+            "exception_message": str(exception),
+        },
+    }
+
+def _ensure_local_audio(card, db_path=None):
+    if _audio_matches_current_renderer(card):
         return None
     tres = tts_helper.synthesize(_tts_text(card))
     if tres.get("success"):
-        card["audio_path"] = tres["output_path"]
-        db_helper.set_audio_path(card["root_id"], card["front"], tres["output_path"],
-                                 db_path=db_path)
-        return None
+        output_path = Path(tres.get("output_path", ""))
+        try:
+            valid_output = output_path.is_file() and output_path.stat().st_size > 0
+        except OSError:
+            valid_output = False
+        if valid_output:
+            card["audio_path"] = tres["output_path"]
+            card["tts_provider"] = tres.get("provider")
+            card["tts_voice"] = tres.get("voice")
+            card["tts_render_version"] = tres.get("render_version")
+            db_helper.set_audio_metadata(
+                card["root_id"], card["front"], tres["output_path"],
+                provider=tres.get("provider"), voice=tres.get("voice"),
+                render_version=tres.get("render_version"), db_path=db_path)
+            return None
+        tres = {
+            **tres,
+            "success": False,
+            "error": f"TTS reported success but output is missing or empty: {output_path}",
+            "error_code": "tts_invalid_output",
+            "error_stage": "output_validation",
+            "retryable": True,
+            "error_details": {"output_path": str(output_path)},
+        }
     card["audio_path"] = ""
-    db_helper.set_audio_path(card["root_id"], card["front"], "", db_path=db_path)
-    return {"root_id": card.get("root_id"),
-            "error": f"local audio missing and re-synthesis failed: {tres.get('error')}"}
+    card["tts_provider"] = None
+    card["tts_voice"] = None
+    card["tts_render_version"] = None
+    db_helper.set_audio_metadata(card["root_id"], card["front"], "", db_path=db_path)
+    return _tts_error(card, tres)
 
 def connect_anki(deck_name):
     try:
@@ -109,5 +173,11 @@ def connect_anki(deck_name):
 def _route_listening(source_deck):
     try:
         return anki_connector.route_listening_cards(source_deck, config.ANKI_LISTENING_DECK), None
+    except Exception as e:
+        return 0, str(e)
+
+def _route_hyogai(source_deck):
+    try:
+        return anki_connector.route_hyogai_cards(source_deck, config.ANKI_HYOGAI_DECK), None
     except Exception as e:
         return 0, str(e)

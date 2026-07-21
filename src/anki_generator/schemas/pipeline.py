@@ -39,8 +39,9 @@ class CmdRunResponse(TypedDict, total=False):
     backlog_synced: int
     backlog_errors: list[dict[str, Any]]
     routed_listening: int
+    routed_hyogai: int
     routing_warning: str
-    tts_warnings: list[dict[str, Any]]
+    tts_errors: list[dict[str, Any]]
     warnings: list[ValidationWarning]
     archived_to: str
     attempts: int
@@ -48,6 +49,7 @@ class CmdRunResponse(TypedDict, total=False):
     normalized: list[NormalizationLog] | None
     cards_missing_korean: list[dict[str, Any]]
     existing_cards: dict[str, int]   # root_id → other cards already in the DB (dedup hint)
+    reading_equivalent_roots: dict[str, list[str]]  # root_id → reading-equivalent DB roots
 
 class CmdSyncPendingResponse(TypedDict, total=False):
     status: Literal["done", "partial", "error"]
@@ -58,14 +60,16 @@ class CmdSyncPendingResponse(TypedDict, total=False):
     message: str
     errors: list[dict[str, Any]]
     routed_listening: int
+    routed_hyogai: int
     routing_warning: str
-    tts_warnings: list[dict[str, Any]]
 
 class CmdSyncDecksResponse(TypedDict, total=False):
     status: Literal["done", "error"]
     routed_listening: int
+    routed_hyogai: int
     source_deck: str
     listening_deck: str
+    hyogai_deck: str
     message: str
 
 class CmdBackfillResponse(TypedDict, total=False):

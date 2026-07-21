@@ -38,6 +38,8 @@ def fake_anki_online(monkeypatch, deck="TestDeck"):
             return []  # first contact — the repo-owned model gets created
         if action == "createModel":
             return {}
+        if action == "storeMediaFile":
+            return params["filename"]
         if action == "addNote":
             return 12345
         raise AssertionError(f"unexpected action {action}")
@@ -56,7 +58,9 @@ def fake_tts_file(monkeypatch, tmp_path):
     mp3.write_bytes(b"audio")
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
                         lambda text, output_path=None, voice=None:
-                        {"success": True, "output_path": str(mp3)})
+                        {"success": True, "output_path": str(mp3),
+                         "provider": "azure", "voice": "ja-JP-NanamiNeural",
+                         "render_version": "azure-ssml-v2"})
     return mp3
 
 def test_backfill_audio_updates_db_and_anki_note(tmp_path, monkeypatch):
@@ -87,7 +91,9 @@ def test_backfill_audio_updates_db_and_anki_note(tmp_path, monkeypatch):
     assert captured["note"] == {"id": 777, "fields": {"Audio": "[sound:tts_backfilled.mp3]"}}
 
     conn = open_test_db(db)
-    assert conn.execute("SELECT audio_path FROM cards").fetchone()[0] == "tts_backfilled.mp3"
+    assert conn.execute(
+        "SELECT audio_path, tts_provider, tts_render_version FROM cards").fetchone() \
+        == ("tts_backfilled.mp3", "azure", "azure-ssml-v2")
     conn.close()
 
 def test_backfill_audio_leaves_pending_cards_to_push_time(tmp_path, monkeypatch):
@@ -170,10 +176,10 @@ def test_sync_pending_resynthesizes_missing_audio(tmp_path, monkeypatch):
     result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
     assert code == 0 and result["status"] == "done"
     assert result["synced_count"] == 1
-    assert "tts_warnings" not in result
+    assert "errors" not in result
     assert captured["fields"]["Audio"] == "[sound:tts_missing.mp3]"
 
-def test_sync_pending_clears_audio_when_resynthesis_fails(tmp_path, monkeypatch):
+def test_sync_pending_keeps_card_pending_when_resynthesis_fails(tmp_path, monkeypatch):
     db = str(tmp_path / "test.db")
     patch_backup(monkeypatch, tmp_path)
     media = tmp_path / "media"
@@ -183,13 +189,20 @@ def test_sync_pending_clears_audio_when_resynthesis_fails(tmp_path, monkeypatch)
         back_meaning="타협", audio_path="tts_missing.mp3")], db_path=db)
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
                         lambda text, output_path=None, voice=None:
-                        {"success": False, "error": "no network"})
+                        {"success": False, "error": "no network",
+                         "provider": "azure", "error_code": "azure_canceled",
+                         "error_stage": "provider_response", "retryable": True,
+                         "error_details": {"service_error_code": "ConnectionFailure"}})
     fake_anki_online(monkeypatch)
 
     result, code = pipeline.cmd_sync_pending("TestDeck", db_path=db)
-    assert code == 0 and result["status"] == "done"
-    assert result["synced_count"] == 1  # pushed silent rather than stuck
-    assert result["tts_warnings"][0]["root_id"] == "妥協(だきょう)"
+    assert code == 1 and result["status"] == "partial"
+    assert result["synced_count"] == 0
+    assert result["errors"][0]["root_id"] == "妥協(だきょう)"
+    assert result["errors"][0]["error_details"]["service_error_code"] \
+        == "ConnectionFailure"
+    assert [c["root_id"] for c in db_helper.fetch_pending(db_path=db)] \
+        == ["妥協(だきょう)"]
     # audio_path is cleared, so the card is visible to backfill-audio later.
     assert [c["root_id"] for c in db_helper.fetch_missing_audio(db_path=db)] \
         == ["妥協(だきょう)"]
