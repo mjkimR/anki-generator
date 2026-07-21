@@ -70,12 +70,19 @@ ANKI_NOTE_MODEL = os.getenv("ANKI_NOTE_MODEL", "AnkiGen JA")
 # born in ANKI_DEFAULT_DECK and swept here by a code-owned changeDeck pass
 # (anki_connector.route_listening_cards) — Anki exposes no per-template Deck Override API.
 ANKI_LISTENING_DECK = os.getenv("ANKI_LISTENING_DECK", "Japanese::Listening")
+# Hyōgai-kanji recognition cards (ADR-0009) live in their own single deck so its
+# new-cards/day limit throttles the familiarization stream — the goal is eye-familiarity,
+# not recall. Attention weighting is per card (the HyogaiPriority badge on the front),
+# not per deck. Cards are born in ANKI_DEFAULT_DECK and swept here by the same
+# code-owned changeDeck pass as Listening (anki_connector.route_hyogai_cards).
+ANKI_HYOGAI_DECK = os.getenv("ANKI_HYOGAI_DECK", "Japanese::Hyogai")
 # Per-machine switch (.env is gitignored): ANKI_ENABLED=0 declares a generation-only
 # machine — no Anki here, ever. The pipeline then skips every Anki interaction (and TTS,
 # which happens at push time) and reports that committing data/ is all that's needed.
 ANKI_ENABLED = os.getenv("ANKI_ENABLED", "1").strip().lower() not in ("0", "false", "no")
 
 # TTS configuration
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "azure").strip().lower()
 TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
 
 # Temporary directory for media files. Created on demand by the write sites

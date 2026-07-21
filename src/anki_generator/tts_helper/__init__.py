@@ -4,6 +4,8 @@ from .core import (
     to_ssml,
     generate_speech,
     default_output_path,
+    resolve_provider,
+    synthesis_metadata,
     synthesize,
 )
 from . import core
@@ -14,6 +16,8 @@ __all__ = [
     "to_ssml",
     "generate_speech",
     "default_output_path",
+    "resolve_provider",
+    "synthesis_metadata",
     "synthesize",
     "core",
 ]
