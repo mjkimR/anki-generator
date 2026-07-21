@@ -57,7 +57,7 @@ def fake_tts_file(monkeypatch, tmp_path):
     mp3 = tmp_path / "tts_backfilled.mp3"
     mp3.write_bytes(b"audio")
     monkeypatch.setattr(pipeline.tts_helper, "synthesize",
-                        lambda text, output_path=None, voice=None:
+                        lambda text, output_path=None, voice=None, **kwargs:
                         {"success": True, "output_path": str(mp3),
                          "provider": "azure", "voice": "ja-JP-NanamiNeural",
                          "render_version": "azure-ssml-v2"})
@@ -206,3 +206,34 @@ def test_sync_pending_keeps_card_pending_when_resynthesis_fails(tmp_path, monkey
     # audio_path is cleared, so the card is visible to backfill-audio later.
     assert [c["root_id"] for c in db_helper.fetch_missing_audio(db_path=db)] \
         == ["妥協(だきょう)"]
+
+
+def test_backfill_audio_force_resynthesizes_existing_audio(tmp_path, monkeypatch):
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    fake_tts_file(monkeypatch, tmp_path)
+    db_helper.insert_card_records([make_japanese_card(
+        back_meaning="타협", synced_to_anki=1, anki_note_id=777, audio_path="old_tts.mp3")], db_path=db)
+
+    captured = {}
+    def fake_invoke(action, **params):
+        if action == "deckNames":
+            return ["TestDeck"]
+        if action == "storeMediaFile":
+            return params["filename"]
+        if action == "updateNoteFields":
+            captured["note"] = params["note"]
+            return None
+        raise AssertionError(f"unexpected action {action}")
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", fake_invoke)
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", fake_invoke)
+
+    # Without force, non-empty audio_path is skipped
+    result, code = pipeline.cmd_backfill_audio(db_path=db, force=False)
+    assert code == 0 and result["backfilled"] == 0
+
+    # With force=True, non-empty audio_path is re-synthesized and updated
+    result, code = pipeline.cmd_backfill_audio(db_path=db, force=True)
+    assert code == 0 and result["backfilled"] == 1 and result["notes_updated"] == 1
+    assert captured["note"] == {"id": 777, "fields": {"Audio": "[sound:tts_backfilled.mp3]"}}
+

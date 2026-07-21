@@ -137,7 +137,7 @@ alias akg='uv run anki-gen'
 |---|---|
 | `akg doctor` | First stop when anything seems off. Checks env/DB/mirror/Anki |
 | `akg sync-pending` | Push cards made while Anki was closed, right now |
-| `akg backfill-audio` | Repair already-synced silent cards from older versions |
+| `akg backfill-audio` | Repair already-synced silent cards (pass `--force` to re-synthesize all existing audio) |
 | `akg sync-decks` | Re-run routing when Listening or Hyōgai cards linger in the vocab deck |
 | `akg gc-media` | Delete mp3s no card references (occasionally) |
 | `akg practice weak-words` | What to practice next — your weakest words (uses live Anki stats when open, offline blend otherwise) |

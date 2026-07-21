@@ -423,12 +423,12 @@ def fetch_pending(db_path=None):
             card["audio_path"] = str(config.MEDIA_DIR / audio)
     return cards
 
-def fetch_missing_audio(db_path=None):
+def fetch_missing_audio(db_path=None, force: bool = False):
     columns = list(CARD_COLUMNS)
+    where = "" if force else " WHERE audio_path IS NULL OR audio_path = ''"
     with connection(db_path) as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(columns)} FROM cards"
-            " WHERE audio_path IS NULL OR audio_path = '' ORDER BY id"
+            f"SELECT {', '.join(columns)} FROM cards{where} ORDER BY id"
         ).fetchall()
     return [_row_to_card(row, columns) for row in rows]
 

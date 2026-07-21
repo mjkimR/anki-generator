@@ -327,7 +327,7 @@ def default_output_path(text, voice, provider=None):
     return config.MEDIA_DIR / f"tts_{hashlib.md5(key.encode('utf-8')).hexdigest()}.mp3"
 
 
-def synthesize(text, output_path=None, voice=None, provider=None):
+def synthesize(text, output_path=None, voice=None, provider=None, force=False):
     """Synthesize with the explicitly selected provider; never fall back silently."""
     voice = voice or config.TTS_DEFAULT_VOICE
     try:
@@ -342,21 +342,23 @@ def synthesize(text, output_path=None, voice=None, provider=None):
     else:
         output_path = Path(output_path).resolve()
 
-    try:
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            return {
-                "success": True,
-                "output_path": str(output_path),
-                "cleaned_text": clean_html(text),
-                "cached": True,
-                **metadata,
-            }
-    except OSError as e:
-        return _filesystem_failure(
-            "Could not inspect the TTS cache file", e, metadata,
-            error_code="cache_read_error", error_stage="cache_lookup")
+    if not force:
+        try:
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return {
+                    "success": True,
+                    "output_path": str(output_path),
+                    "cleaned_text": clean_html(text),
+                    "cached": True,
+                    **metadata,
+                }
+        except OSError as e:
+            return _filesystem_failure(
+                "Could not inspect the TTS cache file", e, metadata,
+                error_code="cache_read_error", error_stage="cache_lookup")
 
     try:
         return asyncio.run(generate_speech(text, output_path, voice, metadata["provider"]))
     except Exception as e:
         return _provider_exception(metadata["provider"], e, metadata)
+

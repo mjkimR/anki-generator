@@ -97,12 +97,12 @@ def cmd_sync_decks(deck_name, db_path=None) -> tuple[CmdSyncDecksResponse, int]:
             "hyogai_deck": config.ANKI_HYOGAI_DECK,
             "message": " ".join(parts)}, 0
 
-def cmd_backfill_audio(db_path=None) -> tuple[CmdBackfillResponse, int]:
+def cmd_backfill_audio(db_path=None, force: bool = False) -> tuple[CmdBackfillResponse, int]:
     error = generation_only_error("This machine is generation-only (ANKI_ENABLED=0) — "
                                   "run backfill-audio on an Anki-equipped machine instead.")
     if error:
         return error
-    missing = db_helper.fetch_missing_audio(db_path=db_path)
+    missing = db_helper.fetch_missing_audio(db_path=db_path, force=force)
     if not missing:
         return {"status": "done", "backfilled": 0, "message": "No cards are missing audio."}, 0
 
@@ -131,7 +131,7 @@ def cmd_backfill_audio(db_path=None) -> tuple[CmdBackfillResponse, int]:
                             "reason": "synced without a recorded note id (pre-tracking "
                                       "or duplicate) — update the note in Anki manually"})
             continue
-        tres = tts_helper.synthesize(_tts_text(card))
+        tres = tts_helper.synthesize(_tts_text(card), force=force)
         if not tres.get("success"):
             errors.append(_tts_error(card, tres))
             continue

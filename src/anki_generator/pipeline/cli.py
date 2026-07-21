@@ -27,9 +27,10 @@ def sync_decks_cmd(deck, db):
     emit(*cmd_sync_decks(deck, db_path=db))
 
 @click.command(name="backfill-audio", help="Synthesize missing audio and update the DB + Anki notes")
+@click.option("--force", is_flag=True, help="Force re-synthesis of all cards even if audio exists")
 @db_option
-def backfill_audio_cmd(db):
-    emit(*cmd_backfill_audio(db_path=db))
+def backfill_audio_cmd(force, db):
+    emit(*cmd_backfill_audio(db_path=db, force=force))
 
 @click.command(name="doctor", help="Check the environment end to end")
 @db_option

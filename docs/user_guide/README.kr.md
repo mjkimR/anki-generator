@@ -108,7 +108,7 @@ alias akg='uv run anki-gen'
 |---|---|
 | `akg doctor` | 시스템 상태가 비정상적일 때 가장 먼저 실행. 환경 설정, DB, 미러링 상태, Anki 연동을 일괄 점검 |
 | `akg sync-pending` | Anki가 꺼진 상태에서 생성되어 대기 중인 카드를 즉시 Anki로 동기화(푸시) |
-| `akg backfill-audio` | 이전 버전에서 이미 동기화된 무음 카드의 음성 데이터 복구 |
+| `akg backfill-audio` | 이전 버전에서 동기화된 무음 카드의 음성 복구 (전체 카드 음성 재합성은 `--force`) |
 | `akg sync-decks` | 듣기(Listening)·표외한자(Hyōgai) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
 | `akg gc-media` | 어떤 카드로도 참조되지 않고 유실된 미디어 파일(mp3)을 일괄 정리 (주기적으로 가끔 실행) |
 | `akg practice weak-words` | 다음에 연습할 단어 — 가장 약한 단어 (Anki 실행 중이면 라이브 통계, 아니면 오프라인 블렌드) |
