@@ -5,6 +5,7 @@ from typing import Any
 
 from anki_generator.schemas import ValidationResult
 from anki_generator.common import coerce_cards, TARGET_MARKER_RE
+from .joyo import hyogai_kanji, compute_is_hyogai
 
 # joyokanji Import: converts kyūjitai (舊字體, ≈ Korean traditional hanja) -> shinjitai (新字體).
 # The map keys ARE the old-form set, so hitting one means a traditional/Korean-style glyph
@@ -222,6 +223,47 @@ def validate_korean_presence(card):
                 "explanation ([뜻]). Double-check the language. Informational only."]
     return []
 
+VALID_HYOGAI_PRIORITY = {'high', 'mid', 'low'}
+
+def sync_computed_hyogai(card):
+    """Overwrites `is_hyogai` with the value computed from the root_id headword
+    (ADR-0009: the flag is derived, never model-asserted). Returns a change
+    description when the stored value was wrong, else None."""
+    computed = compute_is_hyogai(card.get('root_id'))
+    changed = bool(card.get('is_hyogai')) != computed
+    card['is_hyogai'] = computed
+    return f"is_hyogai: recomputed to {computed} from root_id headword" if changed else None
+
+def validate_hyogai(card):
+    """Mechanical enforcement of the ADR-0009 orthography policy:
+    (a) `is_hyogai` equals the value computed from the root_id headword (the --fix
+        pre-pass rewrites it, so this only surfaces on fix-less validation);
+    (b) the TARGET word's surface stays kana — no non-jōyō kanji in `target_word`;
+        the dictionary kanji form lives in root_id only. Context words in the
+        sentence keep natural orthography (醤油, 噂, 鞄 …) — back_reading's
+        furigana covers their reading, so they are deliberately not checked;
+    (c) a hyōgai word carries `hyogai_priority` (how often the word is actually
+        written in kanji in modern media), a non-hyōgai word must not."""
+    errors = []
+    computed = compute_is_hyogai(card.get('root_id'))
+    if bool(card.get('is_hyogai')) != computed:
+        errors.append(f"is_hyogai must be {computed} — it is computed from the root_id "
+                      "headword's jōyō membership, not asserted (run with --fix to rewrite).")
+    chars = hyogai_kanji(card.get('target_word') or '')
+    if chars:
+        errors.append(f"Field 'target_word' contains non-jōyō kanji {chars}. The target "
+                      "word's surface must be kana in target_word and front — keep the "
+                      "kanji headword in root_id and rewrite the surface in kana "
+                      "(e.g. 咎めた → とがめた).")
+    priority = card.get('hyogai_priority') or ''
+    if computed and priority not in VALID_HYOGAI_PRIORITY:
+        errors.append("hyogai_priority is required for a hyōgai word and must be one of "
+                      "['high', 'mid', 'low'] — judge how often the word is actually "
+                      "written in kanji in modern media (辻褄 → high, 誂える → low).")
+    elif not computed and priority:
+        errors.append(f"hyogai_priority ('{priority}') must be empty for a non-hyōgai word.")
+    return errors
+
 # Generated cards are plain text: the target word is marked as *word* (checked here,
 # converted to a styled span at push time — TARGET_MARKER_RE in common.py is that
 # two-sided contract) and readings use Anki bracket furigana (決断[けつだん]).
@@ -298,6 +340,11 @@ def validate_card_json(json_file_path, auto_fix=False) -> ValidationResult:
         if auto_fix:
             for idx, card in enumerate(cards):
                 changes = normalize_card(card)
+                # is_hyogai is derived data (ADR-0009): recompute it from the (now
+                # shinjitai-normalized) root_id headword rather than trusting the model.
+                hyogai_change = sync_computed_hyogai(card)
+                if hyogai_change:
+                    changes.append(hyogai_change)
                 if changes:
                     normalizations.append({"card_index": idx, "fixed": changes})
             if normalizations:
@@ -333,6 +380,12 @@ def validate_card_json(json_file_path, auto_fix=False) -> ValidationResult:
             markup_errs = validate_front_marker(card) + validate_reading_furigana(card)
             if markup_errs:
                 card_errors.extend(markup_errs)
+
+            # 4b. Hyōgai orthography policy (ADR-0009): computed is_hyogai, kana-only
+            # card surfaces, and the priority enum — all mechanical.
+            hyogai_errs = validate_hyogai(card)
+            if hyogai_errs:
+                card_errors.extend(hyogai_errs)
 
             # 5. Cross-validation of Yomigana — mismatches are informational warnings only;
             # they must never flip valid to false (Janome coverage is incomplete).
