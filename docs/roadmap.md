@@ -47,6 +47,17 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
   model should ship.
 - **Dependencies:** confusion capture and feedback harvest data.
 
+### Jōyō kanji consolidation model
+
+- **Learner state & context:** N1+ advanced learners transitioning from bottom-up vocabulary exposure to top-down schema consolidation. While ~70–80% of readings are implicitly known, learners experience cognitive interference (ambiguity around whether a kanji has 1 reading vs 2+, and reading overlap between visually similar characters).
+- **Cognitive theory rationale:** grounded in memory consolidation and cognitive schema theory. Organizing fragmented, implicitly acquired vocabulary knowledge into explicit category bounds (schema elaboration) eliminates interference and locks in high-confidence long-term retrieval.
+- **Outcome:** evaluate a dedicated single-kanji consolidation card format for N1+ learners to organize fragmented reading knowledge into clear schema bounds:
+  - **Reading-count boundary:** explicitly states if the kanji has 1 single reading vs 2+ readings.
+  - **Word-anchored readings:** pairs core on/kun readings with 1–2 high-utility representative word anchors rather than raw reading lists.
+  - **One-line distinction note:** records a concise memory rule for edge cases or common pitfalls.
+- **Relation to confusion cards:** kanji-specific visual confusion pairs (e.g., 綱/網, 掘/堀, 候/侯) identified through `doctor` harvest leverage the separate *Confusion-card experiment* mechanics for dynamic discrimination practice.
+- **Exit criteria:** define standard schema/note model for Jōyō kanji consolidation; test with a pilot batch of ambiguous/multi-reading kanji.
+
 ### Exposure-aware legacy retirement
 
 - **Outcome:** retire healthy legacy material in reversible waves without treating incidental
