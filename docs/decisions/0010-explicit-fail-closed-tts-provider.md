@@ -31,9 +31,16 @@ Persist `tts_provider`, `tts_voice`, and `tts_render_version` with `audio_path`.
 same values plus the annotated pronunciation input in the cache key. Do not infer provenance
 for legacy audio; unknown history remains null until the audio is regenerated.
 
-Azure SSML substitutions cover complete pronunciation units rather than splitting kanji from
-okurigana. TTS errors retain a stable code, failing stage, retryability, and provider details;
-Azure cancellations also retain the service error code/message and synthesis result id.
+Azure SSML substitutions convert annotated kanji runs into Katakana aliases
+(`<sub alias="ハ">果</sub>てた`) while leaving okurigana and particles in natural Japanese
+text context outside `sub` nodes, preventing isolated word-initial hiragana `は` from being
+read as topic particle `わ (wa)`. Inter-word half-width spaces between Japanese characters are
+stripped in SSML content to eliminate artificial inter-word pauses.
+
+`anki-gen backfill-audio --force` supports bulk re-synthesis of already-synced notes when renderer
+logic or pronunciation rules are updated. TTS errors retain a stable code, failing stage,
+retryability, and provider details; Azure cancellations also retain the service error code/message
+and synthesis result id.
 
 ## Consequences
 

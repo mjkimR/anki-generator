@@ -80,32 +80,41 @@ def synthesis_metadata(voice=None, provider=None):
     }
 
 
-def _annotated_unit_to_ssml(unit):
-    """Render one whitespace-delimited pronunciation unit as one substitution.
+def _hira_to_kata(text):
+    return "".join(chr(ord(ch) + 0x60) if "ぁ" <= ch <= "ん" else ch for ch in text)
 
-    Splitting 果[は]てた into ``<sub alias="は">果</sub>てた`` makes Azure
-    analyze the isolated は as a topic particle and pronounce it わ. Keeping the
-    complete unit together produces ``<sub alias="はてた">果てた</sub>``.
+
+def _annotated_unit_to_ssml(unit):
+    """Render annotated Japanese kanji runs as Katakana SSML substitutions.
+
+    Converting alias yomigana to Katakana prevents Azure's G2P engine from
+    misinterpreting isolated word-initial hiragana 'は' as the topic particle 'わ'.
+    Kanji runs are substituted individually so okurigana and particles stay
+    outside sub nodes in natural Japanese context.
     """
-    if not _ANNOTATED_KANJI_RE.search(unit):
-        return html.escape(unit)
-    surface = _ANNOTATED_KANJI_RE.sub(r'\1', unit)
-    alias = _ANNOTATED_KANJI_RE.sub(r'\2', unit)
-    return (f'<sub alias="{html.escape(alias, quote=True)}">'
-            f'{html.escape(surface)}</sub>')
+    def replace_kanji(m):
+        surface = m.group(1)
+        reading = m.group(2)
+        alias = _hira_to_kata(reading)
+        return f'<sub alias="{html.escape(alias, quote=True)}">{html.escape(surface)}</sub>'
+    return _ANNOTATED_KANJI_RE.sub(replace_kanji, unit)
 
 
 def to_ssml(raw_text, voice):
-    """Convert annotated Japanese to Azure SSML with whole pronunciation units.
+    """Convert annotated Japanese to Azure SSML with Katakana kanji substitutions.
 
-    Half-width spaces in ``back_reading`` are validated segmentation hints. Each
-    whitespace-delimited unit containing furigana becomes one ``sub`` node, keeping
-    kanji, okurigana, and adjacent particles in the same pronunciation context.
+    Strips inter-word half-width spaces between Japanese characters to ensure smooth,
+    unbroken natural pronunciation while keeping kanji readings deterministic.
     """
     text = _strip_markup(raw_text).strip()
-    content = "".join(
-        part if part.isspace() else _annotated_unit_to_ssml(part)
-        for part in re.split(r'(\s+)', text)
+    # Remove half-width spaces between Japanese/CJK characters to avoid inter-word pauses
+    text = re.sub(r'([ぁ-んァ-ヶ一-鿿\]])\s+([ぁ-んァ-ヶ一-鿿])', r'\1\2', text)
+    content = _annotated_unit_to_ssml(html.escape(text))
+    # html.escape escapes < and >, but our sub tags must stay intact: unescape valid sub tags
+    content = re.sub(
+        r'&lt;sub alias=&quot;(.*?)&quot;&gt;(.*?)&lt;/sub&gt;',
+        r'<sub alias="\1">\2</sub>',
+        content,
     )
     safe_voice = html.escape(voice, quote=True)
     return (

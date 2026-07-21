@@ -57,10 +57,15 @@ are treated as already synchronized so retries remain idempotent.
 ## TTS
 
 TTS runs at push time through the provider explicitly selected by `TTS_PROVIDER`: `azure`
-(default) or `edge`. There is no automatic fallback. Azure receives SSML whose `sub` nodes
-cover complete whitespace-delimited pronunciation units, so kanji and okurigana such as
-`果[は]てた` stay together as `<sub alias="はてた">果てた</sub>`. Edge receives the validated
+(default) or `edge`. There is no automatic fallback. Azure receives SSML with Katakana kanji-run
+substitutions (`<sub alias="ハ">果</sub>てた`) while leaving okurigana and particles in natural
+Japanese context, preventing isolated word-initial hiragana `は` from being read as topic particle
+`わ (wa)`. Inter-word half-width spaces between Japanese characters are stripped in SSML content
+so words flow naturally without artificial inter-word pauses (`疲れ果てた`). Edge receives the validated
 kana produced by `reading_to_kana(back_reading)`.
+
+`anki-gen backfill-audio --force` enables bulk re-synthesis of already-synced notes when renderer
+logic or pronunciation rules are updated.
 
 If synthesis fails, that card is not pushed or marked synced; it remains in the DB queue for
 `sync-pending`. Anki being offline remains a normal persistence-only outcome.

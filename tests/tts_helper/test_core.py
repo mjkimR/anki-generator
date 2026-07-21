@@ -89,28 +89,23 @@ def test_to_ssml_converts_furigana_to_sub_alias():
     raw = "彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。"
     ssml = to_ssml(raw, "ja-JP-NanamiNeural")
     assert '<voice name="ja-JP-NanamiNeural">' in ssml
-    assert ('<sub alias="かれは">彼は</sub> '
-            '<sub alias="けつだんを">決断を</sub> '
-            '<sub alias="ためらった。">躊躇った。</sub>' in ssml)
+    assert ('<sub alias="カレ">彼</sub>は<sub alias="ケツダン">決断</sub>を<sub alias="タメラ">躊躇</sub>った。' in ssml)
 
 def test_to_ssml_keeps_okurigana_with_kanji_reading():
     ssml = to_ssml("疲[つか]れ 果[は]てた 部下[ぶか]たちを", "ja-JP-NanamiNeural")
-    assert ('<sub alias="つかれ">疲れ</sub> '
-            '<sub alias="はてた">果てた</sub> '
-            '<sub alias="ぶかたちを">部下たちを</sub>' in ssml)
-    assert '<sub alias="は">果</sub>てた' not in ssml
+    assert ('<sub alias="ツカ">疲</sub>れ<sub alias="ハ">果</sub>てた<sub alias="ブカ">部下</sub>たちを' in ssml)
 
 def test_to_ssml_escapes_xml_special_characters():
     raw = "A & B <span style='color:blue'>C</span> 彼[かれ]は"
     ssml = to_ssml(raw, "ja-JP-NanamiNeural")
-    assert "A &amp; B C <sub alias=\"かれは\">彼は</sub>" in ssml
+    assert 'A &amp; B C <sub alias="カレ">彼</sub>は' in ssml
 
 def test_to_ssml_unspaced_japanese_sentence_does_not_swallow_particles():
     # Without segmentation spaces, preserve every particle while keeping the full
     # sentence in one pronunciation context.
     raw = "彼[かれ]は決断[けつだん]を下[くだ]した。"
     ssml = to_ssml(raw, "ja-JP-NanamiNeural")
-    assert '<sub alias="かれはけつだんをくだした。">彼は決断を下した。</sub>' in ssml
+    assert '<sub alias="カレ">彼</sub>は<sub alias="ケツダン">決断</sub>を<sub alias="クダ">下</sub>した。' in ssml
 
 def test_azure_configuration_failure_never_falls_back_to_edge(tmp_path, monkeypatch):
     monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
