@@ -89,11 +89,11 @@ def test_to_ssml_converts_furigana_to_sub_alias():
     raw = "彼[かれ]は 決断[けつだん]を 躊躇[ためら]った。"
     ssml = to_ssml(raw, "ja-JP-NanamiNeural")
     assert '<voice name="ja-JP-NanamiNeural">' in ssml
-    assert ('<sub alias="カレ">彼</sub>は<sub alias="ケツダン">決断</sub>を<sub alias="タメラ">躊躇</sub>った。' in ssml)
+    assert ('<sub alias="カレ">彼</sub>は <sub alias="ケツダン">決断</sub>を <sub alias="タメラ">躊躇</sub>った。' in ssml)
 
 def test_to_ssml_keeps_okurigana_with_kanji_reading():
     ssml = to_ssml("疲[つか]れ 果[は]てた 部下[ぶか]たちを", "ja-JP-NanamiNeural")
-    assert ('<sub alias="ツカ">疲</sub>れ<sub alias="ハ">果</sub>てた<sub alias="ブカ">部下</sub>たちを' in ssml)
+    assert ('<sub alias="ツカ">疲</sub>れ <sub alias="ハ">果</sub>てた <sub alias="ブカ">部下</sub>たちを' in ssml)
 
 def test_to_ssml_escapes_xml_special_characters():
     raw = "A & B <span style='color:blue'>C</span> 彼[かれ]は"

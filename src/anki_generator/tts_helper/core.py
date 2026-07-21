@@ -96,25 +96,21 @@ def _annotated_unit_to_ssml(unit):
         surface = m.group(1)
         reading = m.group(2)
         alias = _hira_to_kata(reading)
-        return f'<sub alias="{html.escape(alias, quote=True)}">{html.escape(surface)}</sub>'
+        return f'<sub alias="{alias}">{surface}</sub>'
     return _ANNOTATED_KANJI_RE.sub(replace_kanji, unit)
 
 
 def to_ssml(raw_text, voice):
     """Convert annotated Japanese to Azure SSML with Katakana kanji substitutions.
 
-    Strips inter-word half-width spaces between Japanese characters to ensure smooth,
-    unbroken natural pronunciation while keeping kanji readings deterministic.
+    Preserves inter-word half-width spaces between bunsetsu units to maintain proper
+    word/particle boundaries (e.g. '傷は じきに'), while using Katakana aliases for kanji
+    runs so G2P never misreads kanji or misinterprets kanji readings like '果' as 'わ'.
     """
-    text = _strip_markup(raw_text).strip()
-    # Remove half-width spaces between Japanese/CJK characters to avoid inter-word pauses
-    text = re.sub(r'([ぁ-んァ-ヶ一-鿿\]])\s+([ぁ-んァ-ヶ一-鿿])', r'\1\2', text)
-    content = _annotated_unit_to_ssml(html.escape(text))
-    # html.escape escapes < and >, but our sub tags must stay intact: unescape valid sub tags
-    content = re.sub(
-        r'&lt;sub alias=&quot;(.*?)&quot;&gt;(.*?)&lt;/sub&gt;',
-        r'<sub alias="\1">\2</sub>',
-        content,
+    text = html.escape(_strip_markup(raw_text).strip())
+    content = "".join(
+        part if part.isspace() else _annotated_unit_to_ssml(part)
+        for part in re.split(r'(\s+)', text)
     )
     safe_voice = html.escape(voice, quote=True)
     return (
