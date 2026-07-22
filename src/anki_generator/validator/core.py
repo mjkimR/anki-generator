@@ -223,6 +223,36 @@ def validate_korean_presence(card):
                 "explanation ([뜻]). Double-check the language. Informational only."]
     return []
 
+def validate_korean_meaning_length(card):
+    """Checks that back_meaning is a full sentence translation matching front's sentence length.
+    If back_meaning only translates the target word instead of the full example sentence,
+    its character length will be disproportionately small compared to front.
+    Returns (errors, warnings)."""
+    front = card.get('front')
+    meaning = card.get('back_meaning')
+    if not isinstance(front, str) or not isinstance(meaning, str) or not front or not meaning:
+        return ([], [])
+
+    clean_front = re.sub(r'[*_\s]', '', front)
+    clean_meaning = re.sub(r'[*_\s]', '', meaning)
+
+    if len(clean_front) >= 15:
+        ratio = len(clean_meaning) / len(clean_front)
+        if ratio < 0.30 or len(clean_meaning) < 6:
+            return ([
+                f"Field 'back_meaning' ('{meaning}') is suspiciously short (ratio {ratio:.2f} vs "
+                f"'front' sentence length {len(clean_front)}). 'back_meaning' must be the full "
+                "Korean sentence translation, not just a word translation."
+            ], [])
+        elif ratio < 0.50 and len(clean_front) >= 20:
+            return ([], [
+                f"Field 'back_meaning' ('{meaning}') is relatively short compared to 'front' "
+                f"sentence length (ratio {ratio:.2f}). Verify that the full sentence is translated."
+            ])
+
+    return ([], [])
+
+
 VALID_HYOGAI_PRIORITY = {'high', 'mid', 'low'}
 
 def sync_computed_hyogai(card):
@@ -393,8 +423,12 @@ def validate_card_json(json_file_path, auto_fix=False) -> ValidationResult:
             if yomi_errs:
                 card_errors.extend(yomi_errs)
 
-            # 6. Reverse language check on the Korean commentary (warning only).
+            # 6. Korean commentary checks: presence check (warning) + sentence translation length check.
             card_warnings = yomi_warnings + validate_korean_presence(card)
+            meaning_errs, meaning_warns = validate_korean_meaning_length(card)
+            if meaning_errs:
+                card_errors.extend(meaning_errs)
+            card_warnings.extend(meaning_warns)
             if card_warnings:
                 all_warnings.append({
                     "card_index": idx,

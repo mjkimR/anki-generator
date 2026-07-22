@@ -92,9 +92,9 @@ Notes:
 
 ### [Step 4] Korean Pass (Pass B — monolingual)
 Add to each listed card **only** these fields:
-* `back_meaning`: the context-appropriate Korean meaning ([뜻]). Mark the phrase that
+* `back_meaning`: the context-appropriate Korean translation ([뜻]) of the **entire example sentence** (NOT just the target word alone). Mark the phrase that
   translates the target word with `*…*`, exactly as `front` marks the target — it renders
-  in the same highlight color at push time (e.g. `그는 결단을 *망설였다*.`).
+  in the same highlight color at push time (e.g. `그는 결단을 *망설였다*.`). (The validator checks length ratio vs `front` and rejects word-only translations.)
 * `back_tip`: nuance differences vs. confusable synonyms ([Tip]) — optional but recommended.
 * `tags`: search tags (e.g. `["비즈니스", "N1", "동사"]`). Tags may contain Korean — which
   is exactly why they belong to this pass, not Pass A.

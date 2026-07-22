@@ -12,6 +12,7 @@ from anki_generator.validator import (
     validate_pos,
     validate_korean_mix,
     validate_korean_presence,
+    validate_korean_meaning_length,
     validate_yomigana,
     validate_front_marker,
     validate_reading_furigana,
@@ -113,6 +114,42 @@ def test_korean_presence_is_warning_not_error(tmp_path):
     result = validate_card_json(str(card_file))
     assert result["valid"] is True
     assert any("back_meaning" in w for entry in result["warnings"] for w in entry["warnings"])
+
+def test_korean_meaning_length_rejects_word_only_translation():
+    card = {
+        "front": "緊迫した交渉の場において、彼は決断を*ためらった*。",  # len 29
+        "back_meaning": "*망설였다*"  # len 4 -> ratio ~0.138 (< 0.35)
+    }
+    errors, warnings = validate_korean_meaning_length(card)
+    assert len(errors) == 1 and "suspiciously short" in errors[0]
+    assert warnings == []
+
+def test_korean_meaning_length_accepts_full_sentence_translation():
+    card = {
+        "front": "緊迫した交渉の場において、彼は決断を*ためらった*。",
+        "back_meaning": "긴박한 협상 자리에서 그는 결단을 *망설였다*."
+    }
+    errors, warnings = validate_korean_meaning_length(card)
+    assert errors == []
+    assert warnings == []
+
+def test_korean_meaning_length_warns_on_moderately_short_translation():
+    card = {
+        "front": "顧客への対応が店舗によって*まちまち*では、ブランドの信頼を損ないかねない。",  # len 36
+        "back_meaning": "매장별 대응이 *제각각*이다."  # len 14 -> ratio ~0.38 (< 0.50)
+    }
+    errors, warnings = validate_korean_meaning_length(card)
+    assert errors == []
+    assert len(warnings) == 1 and "relatively short" in warnings[0]
+
+def test_korean_meaning_length_ignores_short_front_sentences():
+    card = {
+        "front": "彼は*走った*。",  # len 5 (< 15)
+        "back_meaning": "*달렸다*"  # len 3
+    }
+    errors, warnings = validate_korean_meaning_length(card)
+    assert errors == []
+    assert warnings == []
 
 def test_normalize_shinjitai_joyokanji():
     # Official jōyō kyūjitai -> shinjitai (covered by joyokanji).

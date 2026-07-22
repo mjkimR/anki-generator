@@ -121,3 +121,4 @@ in two tiers:
 3. **Hyōgai policy (ADR-0009)** is mechanical: `is_hyogai` is recomputed from the `root_id`
    headword against the embedded jōyō table (auto-corrected under `--fix`); a hyōgai kanji in
    `target_word` and a missing/invalid `hyogai_priority` are hard failures.
+4. **Sentence translation length ratio**: `back_meaning` must translate the full `front` example sentence, not just the target word. If `front` is a sentence (len >= 15 chars) and `back_meaning` length is suspiciously short (ratio < 0.30 vs `front` or < 6 chars), the validator flags a hard failure.
