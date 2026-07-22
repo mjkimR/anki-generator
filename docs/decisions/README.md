@@ -17,6 +17,7 @@ ADRs preserve **why** a durable decision was made. Current behavior remains docu
 | [0008](0008-shrink-first-legacy-migration.md) | Accepted | Shrink legacy decks instead of mass-migrating them |
 | [0009](0009-kanji-root-identity-kana-surface.md) | Accepted | Kanji root identity, kana surfaces for hyōgai words, sentence-based recognition card |
 | [0010](0010-explicit-fail-closed-tts-provider.md) | Accepted | Select one TTS provider explicitly and fail closed |
+| [0011](0011-single-kanji-reading-acquisition.md) | Proposed | Single-kanji on/kun acquisition deck with a Korean-reading bridge |
 
 ## When to add an ADR
 

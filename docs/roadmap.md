@@ -47,16 +47,48 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
   model should ship.
 - **Dependencies:** confusion capture and feedback harvest data.
 
-### Jōyō kanji consolidation model
+### Single-kanji on/kun acquisition deck (Jōyō)
 
-- **Learner state & context:** N1+ advanced learners transitioning from bottom-up vocabulary exposure to top-down schema consolidation. While ~70–80% of readings are implicitly known, learners experience cognitive interference (ambiguity around whether a kanji has 1 reading vs 2+, and reading overlap between visually similar characters).
-- **Cognitive theory rationale:** grounded in memory consolidation and cognitive schema theory. Organizing fragmented, implicitly acquired vocabulary knowledge into explicit category bounds (schema elaboration) eliminates interference and locks in high-confidence long-term retrieval.
-- **Outcome:** evaluate a dedicated single-kanji consolidation card format for N1+ learners to organize fragmented reading knowledge into clear schema bounds:
-  - **Reading-count boundary:** explicitly states if the kanji has 1 single reading vs 2+ readings.
-  - **Word-anchored readings:** pairs core on/kun readings with 1–2 high-utility representative word anchors rather than raw reading lists.
-  - **One-line distinction note:** records a concise memory rule for edge cases or common pitfalls.
-- **Relation to confusion cards:** kanji-specific visual confusion pairs (e.g., 綱/網, 掘/堀, 候/侯) identified through `doctor` harvest leverage the separate *Confusion-card experiment* mechanics for dynamic discrimination practice.
-- **Exit criteria:** define standard schema/note model for Jōyō kanji consolidation; test with a pilot batch of ambiguous/multi-reading kanji.
+- **Outcome:** a deck that teaches the isolated-kanji → Japanese on/kun reading map. This map
+  is separate from word-level reading fluency — reading 綱領 as こうりょう does not supply
+  綱 alone as コウ/つな — so for this learner it is new acquisition, not consolidation of
+  something implicitly known. It supersedes the existing Korean-only kanji deck (kanji →
+  Korean gloss/reading), which becomes a strict subset.
+- **Korean-reading bridge:** the on-yomi is reachable from the already-known Sino-Korean
+  reading, which is cognate (강→コウ, 학→ガク, 굴→クツ); the non-cognate kun-yomi is anchored
+  to a word the learner already knows (手綱→たづな). The two halves of the card are learned by
+  different mechanisms on purpose.
+- **Card shape:** front is the bare kanji; back carries on-yomi with the official reading
+  **count**, kun-yomi, one representative anchor word per reading, the Korean gloss/reading,
+  and a one-line cognate/pitfall tip. The count is the active boundary: count=1 is usually
+  bridge-predictable and graduates fast under SRS, while count=2+ (a 呉音/漢音 split, where the
+  Korean reading merged to one) is where the real new learning sits. A sparse, never-counted
+  additional-readings row holds frequent 非-音訓表 rules (中→ジュウ, stated as a rule with
+  examples); 熟字訓 stay in the vocabulary layer.
+- **Data build** (bounded to the fixed ~2,136 Jōyō set, code-packaged like
+  `validator/joyo.py`): the Korean gloss/reading is absorbed from the existing kanji deck (the
+  record of what the learner already knows — a cold dictionary yields archaic 訓 like 綱→벼리),
+  with KANJIDIC2 `korean_h` as fallback for gaps. The Japanese side is fresh: 常用漢字表 defines
+  the closed set and count, and targeted search fills anchor-word selection. No TTS.
+- **Container:** sweep the whole Jōyō set as new cards in one throttled deck (the
+  hyōgai-recognition new-cards/day pattern); SRS self-sorts difficulty. Retire the old
+  Korean-only kanji deck reversibly; its exact scope (roughly full-Jōyō, unconfirmed) need not
+  be pinned down because the new sweep is exhaustive regardless.
+- **Relation to confusion cards:** intra-kanji reading schema only. Visual look-alike
+  discrimination (綱/網, 掘/堀, 候/侯) from `doctor` harvest stays with the separate
+  *Confusion-card experiment*.
+- **Exit criteria:** define the repo-owned single-kanji note model and deck; validate the data
+  build on a pilot batch that includes several count=2+ kanji; confirm the old deck's
+  retirement is reversible before the sweep.
+- **Design record:** [ADR-0011](decisions/0011-single-kanji-reading-acquisition.md) (Proposed)
+  carries the full rationale.
+- **Follow-up (enrichment pass, not on the critical path):** once the deck is live, a batched
+  LLM pass (`data/kanji/WORK_INSTRUCTION.md`) fills `special_readings` productive-rule notes
+  (中→ジュウ) where warranted — never counted, so the count boundary stays pure — and mops up
+  residual 漢/呉 category and gloss nits. Card updates ride on `updateNoteFields` (adding the
+  Special field), so it needs no new identity/deletion plumbing. Run when time permits.
+- **Dependencies:** [ADR-0006](decisions/0006-repository-owned-anki-model.md) (repo-owned
+  model plumbing) and [ADR-0005](decisions/0005-reversible-archive.md) (reversible retirement).
 
 ### Exposure-aware legacy retirement
 
