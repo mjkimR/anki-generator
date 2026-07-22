@@ -32,10 +32,14 @@ same values plus the annotated pronunciation input in the cache key. Do not infe
 for legacy audio; unknown history remains null until the audio is regenerated.
 
 Azure SSML substitutions convert annotated kanji runs into Katakana aliases
-(`<sub alias="ハ">果</sub>てた`) while leaving okurigana and particles in natural Japanese
-text context outside `sub` nodes, preventing isolated word-initial hiragana `は` from being
-read as topic particle `わ (wa)`. Inter-word half-width spaces between Japanese characters are
-stripped in SSML content to eliminate artificial inter-word pauses.
+(`<sub alias="ハ">果</sub>てた`) so G2P never misreads a kanji or voices a reading-initial
+`は/へ` as the particle `わ/え`, while leaving okurigana and particles outside `sub` nodes in
+natural Japanese context so genuine topic particles are still voiced correctly. Inter-word
+half-width spaces between bunsetsu are **preserved** in SSML content: they mark word boundaries
+so a plain-hiragana segment that begins with `は` is not fused onto the preceding token and
+misread as topic particle `わ (wa)`. (An earlier revision stripped these spaces and reintroduced
+that misread; preservation is a correctness measure, not prosody, and relies on the validator's
+convention that particles hug the preceding word while a space precedes each new bunsetsu.)
 
 `anki-gen backfill-audio --force` supports bulk re-synthesis of already-synced notes when renderer
 logic or pronunciation rules are updated. TTS errors retain a stable code, failing stage,
