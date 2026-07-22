@@ -14,6 +14,7 @@ class BackupResult(TypedDict, total=False):
     attempts: int
     confusions: int
     card_feedback: int
+    kanji_cards: int
     written: list[str]
     unchanged: list[str]
     removed: list[str]

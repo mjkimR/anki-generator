@@ -19,6 +19,7 @@ def _open_prepared_connection(db_path=None) -> sqlite3.Connection:
         _read_attempts, _read_confusions, _read_card_feedback,
         _reconcile_cards, _reconcile_known_words, _reconcile_attempts,
         _reconcile_confusions, _reconcile_card_feedback,
+        _read_kanji_cards, _reconcile_kanji_cards,
     )
 
     target = db_path or config.DB_PATH
@@ -33,11 +34,13 @@ def _open_prepared_connection(db_path=None) -> sqlite3.Connection:
                 merged_att = _reconcile_attempts(conn, _read_attempts(config.DATA_DIR))
                 merged_conf = _reconcile_confusions(conn, _read_confusions(config.DATA_DIR))
                 merged_fb = _reconcile_card_feedback(conn, _read_card_feedback(config.DATA_DIR))
+                merged_kanji = _reconcile_kanji_cards(conn, _read_kanji_cards(config.DATA_DIR))
                 _set_meta(conn, "partitions_fingerprint", fingerprint)
-                if merged or merged_known or merged_att or merged_conf or merged_fb:
+                if (merged or merged_known or merged_att or merged_conf or merged_fb
+                        or merged_kanji):
                     log(f"[DB] Reconciled {merged} cards + {merged_known} known words"
                         f" + {merged_att} attempts + {merged_conf} confusions"
-                        f" + {merged_fb} feedback from {config.DATA_DIR}")
+                        f" + {merged_fb} feedback + {merged_kanji} kanji from {config.DATA_DIR}")
         conn.commit()
         return conn
     except Exception:

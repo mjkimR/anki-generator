@@ -1,0 +1,14 @@
+<!-- Kanji acquisition back (ADR-0011). Onyomi/Kunyomi hold push-composed HTML because
+     Anki templates cannot loop over the variable-length reading list; the on-yomi count
+     badge is baked into the Onyomi HTML at push time (OnCount stays a field for search).
+     KrGloss/KrReading are absorbed from the existing Korean kanji deck; Tip carries the
+     Korean-reading→on-yomi cognate bridge or a pitfall. -->
+{{FrontSide}}
+<hr id="answer">
+<div class="kback">
+  {{#KrGloss}}<div class="krow"><span class="klabel">한국어</span><div class="kbody"><span class="krgloss">{{KrGloss}}</span>{{#KrReading}} <span class="krread">/ {{KrReading}}</span>{{/KrReading}}</div></div>{{/KrGloss}}
+  <div class="krow"><span class="klabel klabel-on">음독</span><div class="kbody">{{Onyomi}}</div></div>
+  <div class="krow"><span class="klabel klabel-kun">훈독</span><div class="kbody">{{Kunyomi}}</div></div>
+  {{#Special}}<div class="krow"><span class="klabel klabel-sp">추가</span><div class="kbody">{{Special}}</div></div>{{/Special}}
+  {{#Tip}}<div class="ktip"><span class="ktiph">힌트</span> {{Tip}}</div>{{/Tip}}
+</div>

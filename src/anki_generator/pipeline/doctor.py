@@ -127,6 +127,20 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
 
     try:
         with db_helper.connection(db_path) as conn:
+            kanji_count = repository.count_kanji_cards(conn)
+        kanji_lines = db_helper.count_kanji_lines()
+        if kanji_count or kanji_lines:
+            if kanji_count == kanji_lines:
+                add("kanji_cards", True, f"{kanji_count} kanji cards ↔ {kanji_lines} JSONL lines")
+            else:
+                add("kanji_cards", False,
+                    f"DB has {kanji_count} kanji cards but the kanji mirror holds "
+                    f"{kanji_lines} lines — run 'anki-gen db export' and commit data/")
+    except Exception as e:
+        add("kanji_cards", False, str(e))
+
+    try:
+        with db_helper.connection(db_path) as conn:
             for table, count_fn, label in (
                 ("attempts", db_helper.count_attempts_lines, "attempts"),
                 ("confusions", db_helper.count_confusions_lines, "confusion rows"),

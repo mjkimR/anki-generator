@@ -6,6 +6,7 @@ from .core import (
     update_note_audio,
     push_card,
     ensure_note_model,
+    ensure_model,
     route_listening_cards,
     route_hyogai_cards,
     cards_of_notes,
@@ -22,7 +23,15 @@ from .core import (
     ARCHIVE_TAG,
     _load_model_assets,
 )
+from .kanji import (
+    ensure_kanji_model,
+    push_kanji_card,
+    kanji_fields,
+    KANJI_MODEL_FIELDS,
+    KANJI_TEMPLATE_NAME,
+)
 from . import core
+from . import kanji
 
 __all__ = [
     "marker_to_html",
@@ -32,6 +41,7 @@ __all__ = [
     "update_note_audio",
     "push_card",
     "ensure_note_model",
+    "ensure_model",
     "route_listening_cards",
     "route_hyogai_cards",
     "cards_of_notes",
@@ -47,5 +57,11 @@ __all__ = [
     "HYOGAI_PRIORITIES",
     "ARCHIVE_TAG",
     "_load_model_assets",
+    "ensure_kanji_model",
+    "push_kanji_card",
+    "kanji_fields",
+    "KANJI_MODEL_FIELDS",
+    "KANJI_TEMPLATE_NAME",
     "core",
+    "kanji",
 ]

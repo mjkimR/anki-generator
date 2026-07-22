@@ -22,6 +22,10 @@ def count_known_words(conn):
     return conn.execute("SELECT COUNT(*) FROM known_words").fetchone()[0]
 
 
+def count_kanji_cards(conn):
+    return conn.execute("SELECT COUNT(*) FROM kanji_cards").fetchone()[0]
+
+
 def count_practice_rows(conn, table):
     allowed = {"attempts", "confusions", "card_feedback"}
     if table not in allowed:

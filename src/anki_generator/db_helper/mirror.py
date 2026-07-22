@@ -4,14 +4,15 @@ from pathlib import Path
 from anki_generator import config
 
 from .core import (
-    CARD_COLUMNS,
+    CARD_COLUMNS, KANJI_CARD_COLUMNS,
     KNOWN_MIRROR_COLUMNS, _set_meta,
-    _row_to_card, _reconcile_cards,
+    _row_to_card, _kanji_row_to_record, _reconcile_cards,
     _reconcile_known_words, _read_known_words,
     _partitions_fingerprint, _read_partition_cards,
     ATTEMPTS_MIRROR_COLUMNS, CONFUSIONS_MIRROR_COLUMNS, CARD_FEEDBACK_MIRROR_COLUMNS,
     _reconcile_attempts, _reconcile_confusions, _reconcile_card_feedback,
-    _read_attempts, _read_confusions, _read_card_feedback)
+    _read_attempts, _read_confusions, _read_card_feedback,
+    _reconcile_kanji_cards, _read_kanji_cards)
 
 from .insert import insert_card_records  # noqa: E402
 from .session import transaction
@@ -93,6 +94,7 @@ def _export_cards(conn, data_dir):
     _reconcile_attempts(conn, _read_attempts(data_dir))
     _reconcile_confusions(conn, _read_confusions(data_dir))
     _reconcile_card_feedback(conn, _read_card_feedback(data_dir))
+    _reconcile_kanji_cards(conn, _read_kanji_cards(data_dir))
     columns = list(CARD_COLUMNS) + ["created_at"]
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
@@ -116,19 +118,28 @@ def _export_cards(conn, data_dir):
 
     practice = _practice_partitions(conn)
 
+    kanji_columns = list(KANJI_CARD_COLUMNS) + ["created_at"]
+    kanji_rows = conn.execute(
+        f"SELECT {', '.join(kanji_columns)} FROM kanji_cards ORDER BY kanji"
+    ).fetchall()
+    kanji_records = [_kanji_row_to_record(row, kanji_columns) for row in kanji_rows]
+    kanji_partitions = {"kanji_cards.jsonl": kanji_records} if kanji_records else {}
+
     written, unchanged, removed = [], [], []
     _write_mirror_dir(config.get_data_cards_dir(data_dir), "cards-*.jsonl",
                       card_partitions, written, unchanged, removed)
     _write_mirror_dir(config.get_data_known_words_dir(data_dir), "known_words*.jsonl",
                       known_partitions, written, unchanged, removed)
     _write_practice_mirrors(data_dir, practice, written, unchanged, removed)
+    _write_mirror_dir(config.get_data_kanji_dir(data_dir), "kanji_cards*.jsonl",
+                      kanji_partitions, written, unchanged, removed)
 
     _set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
 
     attempts_n, confusions_n, feedback_n = practice["counts"]
     return {"success": True, "total_cards": len(rows), "known_words": len(known_rows),
             "attempts": attempts_n, "confusions": confusions_n,
-            "card_feedback": feedback_n,
+            "card_feedback": feedback_n, "kanji_cards": len(kanji_rows),
             "written": written, "unchanged": unchanged, "removed": removed,
             "data_dir": str(data_dir)}
 
@@ -191,3 +202,6 @@ def count_confusions_lines(data_dir=None):
 
 def count_card_feedback_lines(data_dir=None):
     return len(_read_card_feedback(data_dir or config.DATA_DIR))
+
+def count_kanji_lines(data_dir=None):
+    return len(_read_kanji_cards(data_dir or config.DATA_DIR))

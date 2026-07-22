@@ -14,6 +14,7 @@ from .schema import (
     ATTEMPTS_SCHEMA, ATTEMPTS_MIRROR_COLUMNS,
     CONFUSIONS_SCHEMA, CONFUSIONS_MIRROR_COLUMNS,
     CARD_FEEDBACK_SCHEMA, CARD_FEEDBACK_MIRROR_COLUMNS,
+    KANJI_CARDS_SCHEMA, KANJI_CARD_COLUMNS, KANJI_JSON_COLUMNS,
 )
 
 KANJI_RE = re.compile(r"[一-鿿]")
@@ -155,6 +156,10 @@ def ensure_schema(conn):
     cursor.execute(ATTEMPTS_SCHEMA)
     cursor.execute(CONFUSIONS_SCHEMA)
     cursor.execute(CARD_FEEDBACK_SCHEMA)
+    cursor.execute(KANJI_CARDS_SCHEMA)  # ADR-0011; plain CREATE IF NOT EXISTS
+    # Append special_readings to a kanji_cards table created before it existed.
+    if "special_readings" not in {r[1] for r in cursor.execute("PRAGMA table_info(kanji_cards)")}:
+        cursor.execute("ALTER TABLE kanji_cards ADD COLUMN special_readings TEXT")
     _ensure_confusions_group_id_text(conn)
     _ensure_confusions_resolved_at(conn)
     _ensure_append_only_uuid(conn)
@@ -200,6 +205,7 @@ def _mirror_files(data_dir):
     files.extend(config.get_data_attempts_dir(data_dir).glob("attempts-*.jsonl"))
     files.extend(config.get_data_confusions_dir(data_dir).glob("confusions*.jsonl"))
     files.extend(config.get_data_card_feedback_dir(data_dir).glob("card_feedback*.jsonl"))
+    files.extend(config.get_data_kanji_dir(data_dir).glob("kanji_cards*.jsonl"))
     return sorted(files)
 
 def get_meta(conn, key):
@@ -410,6 +416,17 @@ def _row_to_card(row, columns):
             card[json_field] = []
     return card
 
+def _kanji_row_to_record(row, columns):
+    """A kanji_cards row → mirror dict, decoding the JSON reading/tag columns to nested
+    structures (diff-friendly, human-readable). Mirrors _row_to_card for the vocab table."""
+    record = dict(zip(columns, row))
+    for json_field in KANJI_JSON_COLUMNS:
+        try:
+            record[json_field] = json.loads(record.get(json_field) or "[]")
+        except (TypeError, ValueError):
+            record[json_field] = []
+    return record
+
 def fetch_pending(db_path=None):
     columns = list(CARD_COLUMNS)
     with connection(db_path) as conn:
@@ -497,23 +514,45 @@ _RECONCILE_SQL = f"""
         synced_to_anki = MAX(COALESCE(cards.synced_to_anki, 0),
                              COALESCE(excluded.synced_to_anki, 0)),
         anki_note_id = COALESCE(cards.anki_note_id, excluded.anki_note_id),
-        audio_path = CASE WHEN cards.audio_path IS NULL OR cards.audio_path = ''
-                          THEN excluded.audio_path ELSE cards.audio_path END,
+        audio_path = CASE
+            WHEN cards.audio_path IS NULL OR cards.audio_path = '' THEN excluded.audio_path
+            WHEN excluded.audio_path IS NOT NULL AND excluded.audio_path != '' AND (
+                cards.tts_provider IS NULL
+                OR (COALESCE(cards.synced_to_anki, 0) = 0 AND COALESCE(excluded.synced_to_anki, 0) = 1)
+                OR (cards.anki_note_id IS NULL AND excluded.anki_note_id IS NOT NULL)
+            ) THEN excluded.audio_path
+            ELSE cards.audio_path
+        END,
         tts_provider = CASE
-            WHEN cards.audio_path IS NULL OR cards.audio_path = ''
-                 OR cards.audio_path = excluded.audio_path
-            THEN COALESCE(cards.tts_provider, excluded.tts_provider)
-            ELSE cards.tts_provider END,
+            WHEN cards.audio_path IS NULL OR cards.audio_path = '' THEN excluded.tts_provider
+            WHEN excluded.audio_path IS NOT NULL AND excluded.audio_path != '' AND (
+                cards.tts_provider IS NULL
+                OR (COALESCE(cards.synced_to_anki, 0) = 0 AND COALESCE(excluded.synced_to_anki, 0) = 1)
+                OR (cards.anki_note_id IS NULL AND excluded.anki_note_id IS NOT NULL)
+            ) THEN excluded.tts_provider
+            WHEN cards.audio_path = excluded.audio_path THEN COALESCE(cards.tts_provider, excluded.tts_provider)
+            ELSE cards.tts_provider
+        END,
         tts_voice = CASE
-            WHEN cards.audio_path IS NULL OR cards.audio_path = ''
-                 OR cards.audio_path = excluded.audio_path
-            THEN COALESCE(cards.tts_voice, excluded.tts_voice)
-            ELSE cards.tts_voice END,
+            WHEN cards.audio_path IS NULL OR cards.audio_path = '' THEN excluded.tts_voice
+            WHEN excluded.audio_path IS NOT NULL AND excluded.audio_path != '' AND (
+                cards.tts_provider IS NULL
+                OR (COALESCE(cards.synced_to_anki, 0) = 0 AND COALESCE(excluded.synced_to_anki, 0) = 1)
+                OR (cards.anki_note_id IS NULL AND excluded.anki_note_id IS NOT NULL)
+            ) THEN excluded.tts_voice
+            WHEN cards.audio_path = excluded.audio_path THEN COALESCE(cards.tts_voice, excluded.tts_voice)
+            ELSE cards.tts_voice
+        END,
         tts_render_version = CASE
-            WHEN cards.audio_path IS NULL OR cards.audio_path = ''
-                 OR cards.audio_path = excluded.audio_path
-            THEN COALESCE(cards.tts_render_version, excluded.tts_render_version)
-            ELSE cards.tts_render_version END
+            WHEN cards.audio_path IS NULL OR cards.audio_path = '' THEN excluded.tts_render_version
+            WHEN excluded.audio_path IS NOT NULL AND excluded.audio_path != '' AND (
+                cards.tts_provider IS NULL
+                OR (COALESCE(cards.synced_to_anki, 0) = 0 AND COALESCE(excluded.synced_to_anki, 0) = 1)
+                OR (cards.anki_note_id IS NULL AND excluded.anki_note_id IS NOT NULL)
+            ) THEN excluded.tts_render_version
+            WHEN cards.audio_path = excluded.audio_path THEN COALESCE(cards.tts_render_version, excluded.tts_render_version)
+            ELSE cards.tts_render_version
+        END
 """
 
 def _reconcile_cards(conn, cards):
@@ -606,6 +645,43 @@ def _read_partition_cards(data_dir):
             if line:
                 cards.append(json.loads(line))
     return cards
+
+_RECONCILE_KANJI_SQL = f"""
+    INSERT INTO kanji_cards ({', '.join(KANJI_CARD_COLUMNS)}, created_at)
+    VALUES ({', '.join('?' for _ in KANJI_CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
+    ON CONFLICT(kanji) DO UPDATE SET
+        synced_to_anki = MAX(COALESCE(kanji_cards.synced_to_anki, 0),
+                             COALESCE(excluded.synced_to_anki, 0)),
+        anki_note_id = COALESCE(kanji_cards.anki_note_id, excluded.anki_note_id)
+"""
+
+def _reconcile_kanji_cards(conn, rows):
+    """Fold mirror rows into kanji_cards (merge-then-mirror). A new kanji is inserted; an
+    existing one keeps its LOCAL content and only merges Anki sync state monotonically
+    (synced OR, note id COALESCE), exactly like the cards reconcile — content-edit
+    propagation stays out of scope until update/delete sync ships."""
+    cursor = conn.cursor()
+    merged = 0
+    for row in rows:
+        if not row.get("kanji"):
+            continue
+        values = []
+        for col in KANJI_CARD_COLUMNS:
+            v = row.get(col)
+            if col in KANJI_JSON_COLUMNS:
+                v = json.dumps(v or [], ensure_ascii=False)
+            elif col in ("on_count", "kun_total"):
+                v = int(v or 0)
+            elif col == "synced_to_anki":
+                v = 1 if v else 0
+            values.append(v)
+        values.append(row.get("created_at"))
+        cursor.execute(_RECONCILE_KANJI_SQL, tuple(values))
+        merged += 1
+    return merged
+
+def _read_kanji_cards(data_dir):
+    return _read_jsonl(config.get_data_kanji_file(data_dir))
 
 # --- Practice-data reconcile + read helpers ---
 # attempts / card_feedback are append-only and keyed by a device-independent `uuid`: a mirror

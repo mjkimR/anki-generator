@@ -76,6 +76,13 @@ ANKI_LISTENING_DECK = os.getenv("ANKI_LISTENING_DECK", "Japanese::Listening")
 # not per deck. Cards are born in ANKI_DEFAULT_DECK and swept here by the same
 # code-owned changeDeck pass as Listening (anki_connector.route_hyogai_cards).
 ANKI_HYOGAI_DECK = os.getenv("ANKI_HYOGAI_DECK", "Japanese::Hyogai")
+# Single-kanji on/kun acquisition cards (ADR-0011) are a SEPARATE repo-owned note model
+# with their own deck, whose new-cards/day limit throttles the Jōyō sweep. Unlike the
+# listening/hyōgai templates (extra cards on vocab notes, born in the vocab deck and swept
+# by a changeDeck pass), each kanji card is its OWN note pushed straight into this deck, so
+# no routing pass is needed. Set the real deck name per-machine in .env.
+ANKI_KANJI_NOTE_MODEL = os.getenv("ANKI_KANJI_NOTE_MODEL", "AnkiGen Kanji")
+ANKI_KANJI_DECK = os.getenv("ANKI_KANJI_DECK", "Japanese::Kanji")
 # Per-machine switch (.env is gitignored): ANKI_ENABLED=0 declares a generation-only
 # machine — no Anki here, ever. The pipeline then skips every Anki interaction (and TTS,
 # which happens at push time) and reports that committing data/ is all that's needed.
@@ -102,6 +109,7 @@ DATA_KNOWN_WORDS_SUBDIR = "known_words"
 DATA_ATTEMPTS_SUBDIR = "attempts"
 DATA_CONFUSIONS_SUBDIR = "confusions"
 DATA_CARD_FEEDBACK_SUBDIR = "card_feedback"
+DATA_KANJI_SUBDIR = "kanji_cards"
 
 def get_data_cards_dir(data_dir=None) -> Path:
     return Path(data_dir or DATA_DIR) / DATA_CARDS_SUBDIR
@@ -143,6 +151,14 @@ def get_data_card_feedback_dir(data_dir=None) -> Path:
 
 def get_data_card_feedback_file(data_dir=None) -> Path:
     return get_data_card_feedback_dir(data_dir) / "card_feedback.jsonl"
+
+def get_data_kanji_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_KANJI_SUBDIR
+
+def get_data_kanji_file(data_dir=None) -> Path:
+    # One bounded file: the Jōyō set has a fixed ceiling (~2,136), unlike the ever-growing
+    # cards table that partitions by day.
+    return get_data_kanji_dir(data_dir) / "kanji_cards.jsonl"
 
 # Card working files: one JSON per target word under pending/, archived to done/
 # after the pipeline persists them (the DB is the source of truth from then on).

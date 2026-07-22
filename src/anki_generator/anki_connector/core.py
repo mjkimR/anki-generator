@@ -252,45 +252,45 @@ def push_card(card, deck_name, model_name):
             return "duplicate", None
         raise
 
-def ensure_note_model():
-    """Creates the repo-owned note model in Anki if missing, and syncs its styling and
-    card templates from the git-managed anki_model/ files when they drift. Templates Anki
-    doesn't have yet are ADDED (modelTemplateAdd) rather than the model being recreated,
-    so cards already built from earlier templates — and their review history — are never
-    touched; that is what makes retrofitting the listening template onto a live deck safe.
-    A same-named model with a different field layout is refused rather than mutated."""
-    name = ANKI_NOTE_MODEL
-    templates, css = _load_model_assets()
+def ensure_model(name, fields, templates, css):
+    """Idempotently create or sync a repo-owned note model in Anki — shared by the vocab
+    model and the kanji model (ADR-0011). A missing model is created. An older model that
+    is missing only APPENDED tail fields gets them added in place (modelFieldAdd), which
+    touches no existing card or its review history; any other field layout is refused
+    rather than mutated. Styling and card templates are synced when they drift, and
+    templates Anki does not have yet are ADDED (modelTemplateAdd) rather than the model
+    being recreated — that is what makes retrofitting a new template onto a live deck safe.
+    Returns the model name."""
+    fields = list(fields)
 
     if name not in invoke("modelNames"):
-        invoke("createModel", modelName=name, inOrderFields=list(MODEL_FIELDS), css=css,
+        invoke("createModel", modelName=name, inOrderFields=fields, css=css,
                cardTemplates=templates)
         log(f"[Anki] Created note model '{name}' with {len(templates)} template(s)")
         return name
 
-    fields = list(invoke("modelFieldNames", modelName=name))
-    if fields != list(MODEL_FIELDS):
+    existing_fields = list(invoke("modelFieldNames", modelName=name))
+    if existing_fields != fields:
         # A model created by an older repo version is missing only appended tail
         # fields — add them in place (modelFieldAdd), which touches no existing card
         # or its history. Anything else is a foreign layout and stays refused.
-        if fields != list(MODEL_FIELDS[:len(fields)]):
+        if existing_fields != fields[:len(existing_fields)]:
             raise Exception(
-                f"Note model '{name}' exists but its fields {fields} do not match "
-                f"{list(MODEL_FIELDS)}. Point ANKI_NOTE_MODEL at a fresh name and let "
-                f"the pipeline create it."
+                f"Note model '{name}' exists but its fields {existing_fields} do not "
+                f"match {fields}. Point the model name at a fresh value and let the "
+                f"pipeline create it."
             )
-        for index in range(len(fields), len(MODEL_FIELDS)):
-            invoke("modelFieldAdd", modelName=name,
-                   fieldName=MODEL_FIELDS[index], index=index)
-            log(f"[Anki] Added field '{MODEL_FIELDS[index]}' to '{name}'")
+        for index in range(len(existing_fields), len(fields)):
+            invoke("modelFieldAdd", modelName=name, fieldName=fields[index], index=index)
+            log(f"[Anki] Added field '{fields[index]}' to '{name}'")
 
     if invoke("modelStyling", modelName=name)["css"] != css:
         invoke("updateModelStyling", model={"name": name, "css": css})
-        log(f"[Anki] Synced styling of '{name}' from anki_model/style.css")
+        log(f"[Anki] Synced styling of '{name}'")
 
     # Add the templates Anki is missing; update the ones whose HTML drifted. Adding a
-    # template makes Anki spawn its cards for every matching note at once (the {{#Audio}}
-    # gate keeps silent notes cardless) and leaves all existing cards in place.
+    # template makes Anki spawn its cards for every matching note at once (field gates
+    # keep non-matching notes cardless) and leaves all existing cards in place.
     existing = invoke("modelTemplates", modelName=name)
     to_update = {}
     for t in templates:
@@ -303,9 +303,18 @@ def ensure_note_model():
             to_update[t["Name"]] = desired
     if to_update:
         invoke("updateModelTemplates", model={"name": name, "templates": to_update})
-        log(f"[Anki] Synced {len(to_update)} template(s) of '{name}' from anki_model/")
+        log(f"[Anki] Synced {len(to_update)} template(s) of '{name}'")
 
     return name
+
+
+def ensure_note_model():
+    """Create/keep the vocab note model (ANKI_NOTE_MODEL) in sync from the git-managed
+    anki_model/ files. The {{#Audio}} / {{#HyogaiKanji}} template gates mean adding a
+    template spawns cards only for matching notes; see ensure_model for the safety rules
+    that make retrofitting the listening/hyōgai templates onto a live deck safe."""
+    templates, css = _load_model_assets()
+    return ensure_model(ANKI_NOTE_MODEL, MODEL_FIELDS, templates, css)
 
 def route_listening_cards(source_deck, listening_deck):
     """Code-owned deck routing for the Listening template. AnkiConnect exposes no

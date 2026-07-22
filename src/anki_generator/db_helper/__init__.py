@@ -10,7 +10,8 @@ from .rewrite import rewrite_cards
 from .mirror import (
     export_cards, export_practice_data, import_cards_data,
     count_export_lines, count_known_lines,
-    count_attempts_lines, count_confusions_lines, count_card_feedback_lines)
+    count_attempts_lines, count_confusions_lines, count_card_feedback_lines,
+    count_kanji_lines)
 from .session import connection, transaction
 from .cli import db_group
 from . import core
@@ -24,6 +25,7 @@ __all__ = [
     "export_cards", "export_practice_data", "import_cards_data",
     "count_export_lines", "count_known_lines",
     "count_attempts_lines", "count_confusions_lines", "count_card_feedback_lines",
+    "count_kanji_lines",
     "db_group", "get_meta", "set_meta", "KANJI_RE", "SCHEMA", "core",
     "connection", "transaction"
 ]

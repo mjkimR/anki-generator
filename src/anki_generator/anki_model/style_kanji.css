@@ -1,0 +1,115 @@
+/* AnkiGen Kanji note model — single-kanji on/kun acquisition card (ADR-0011).
+   Source of truth for this model's look; committed here and synced to Anki on push.
+   No fixed text/background colors so Anki's night mode keeps working (mid-greys and
+   rgba borders read on both). */
+
+.card {
+  font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  font-size: 24px;
+  text-align: center;
+}
+
+/* Front: the bare kanji, large. */
+.kglyph {
+  font-size: 92px;
+  line-height: 1.15;
+  font-weight: 500;
+}
+
+/* Back body: left-aligned, smaller, like the vocab .gloss block. */
+.kback {
+  font-size: 0.7em;
+  text-align: left;
+  max-width: 32em;
+  margin: 0.7em auto 0;
+  line-height: 1.7;
+}
+
+.krow {
+  padding: 0.4em 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+.krow:last-of-type { border-bottom: none; }
+
+.klabel {
+  display: inline-block;
+  font-size: 0.8em;
+  font-weight: 700;
+  color: #fff;
+  background: #7a7a7a;
+  border-radius: 4px;
+  padding: 0 0.5em;
+  margin-right: 0.5em;
+  vertical-align: 0.12em;
+}
+.klabel-on  { background: #b0803c; }  /* on-yomi: same gold family as the hyōgai badge */
+.klabel-kun { background: #2e8b57; }  /* kun-yomi: green */
+
+.kbody { display: inline; }
+
+/* Reading headline for each side. */
+.oread, .kread { font-size: 1.15em; font-weight: 700; }
+.oread { color: #b0803c; }
+.kread { color: #2e8b57; }
+
+/* On-yomi count badge (the "closed set" boundary), baked into the Onyomi HTML. */
+.kcount {
+  display: inline-block;
+  font-size: 0.72em;
+  font-weight: 700;
+  color: #fff;
+  background: #5b6ee1;
+  border-radius: 999px;
+  padding: 0 0.6em;
+  margin-left: 0.5em;
+  vertical-align: 0.15em;
+}
+
+/* One anchor line per reading. */
+.anch { margin: 0.2em 0 0.2em 0.15em; }
+.anch b { font-weight: 700; }
+
+/* Per-reading sub-label (漢 セイ / い(きる) …), aligned into a mini table. */
+.osub, .ksub {
+  display: inline-block;
+  min-width: 4.8em;
+  color: #8a8a8a;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.m { color: #8a8a8a; }                 /* anchor-word Korean gloss, muted */
+.kmore { color: #8a8a8a; font-style: italic; margin-left: 0.15em; }
+
+.krgloss { font-weight: 600; }
+.krread { color: #8a8a8a; }
+
+/* Special readings: frequently-met usages outside the 音訓表 closed set (慣用 / 熟字訓).
+   Deliberately muted — supplementary, not part of the counted on/kun set. */
+.klabel-sp { background: #9a7a9a; }
+.sread { margin: 0.2em 0 0.2em 0.15em; color: #6a6a6a; }
+.sreading { font-weight: 700; color: #9a7a9a; }
+.snote { font-style: italic; color: #8a6a8a; }  /* the rule statement for a productive pattern */
+.sex { font-size: 0.85em; color: #8a8a8a; }      /* "예:" — marks the words as examples, not a list */
+.sbadge {
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 700;
+  color: #fff;
+  background: #9a7a9a;
+  border-radius: 4px;
+  padding: 0 0.4em;
+  margin-left: 0.35em;
+  vertical-align: 0.12em;
+}
+
+/* Cognate-bridge / pitfall tip. */
+.ktip {
+  margin-top: 0.7em;
+  padding: 0.45em 0.7em;
+  border-left: 3px solid #7a5cc0;
+  border-radius: 0 6px 6px 0;
+  background: rgba(122, 92, 192, 0.10);
+  font-size: 0.95em;
+}
+.ktiph { color: #7a5cc0; font-weight: 700; margin-right: 0.3em; }
