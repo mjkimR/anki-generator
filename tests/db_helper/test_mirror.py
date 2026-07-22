@@ -107,6 +107,36 @@ def test_reconcile_merges_sync_state_monotonically(tmp_path):
     assert tts == ("azure", "ja-JP-NanamiNeural", "azure-ssml-v2")
     assert fetch_pending(db_path=db) == []
 
+def test_reconcile_updates_stale_local_audio_when_partition_has_synced_azure_tts(tmp_path):
+    data_dir = tmp_path / "data"
+    db = str(tmp_path / "test.db")
+    # Local DB has old edge audio (pre-azure) with no provider, unsynced
+    insert_card_records([
+        make_card("妥協(だきょう)", "妥協を拒んだ。", audio_path="tts_old_edge.mp3",
+                  tts_provider=None, synced_to_anki=0)
+    ], db_path=db)
+    # JSONL partition from other machine has new Azure TTS, synced to Anki
+    partition = [
+        make_card("妥協(だきょう)", "妥協を拒んだ。", synced_to_anki=1,
+                  anki_note_id=999, audio_path="tts_new_azure.mp3",
+                  tts_provider="azure", tts_voice="ja-JP-NanamiNeural",
+                  tts_render_version="azure-ssml-v2",
+                  created_at="2026-07-01 00:00:00")
+    ]
+    (data_dir / "cards").mkdir(parents=True, exist_ok=True)
+    (data_dir / "cards" / "cards-2026-07.jsonl").write_text(
+        "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in partition),
+        encoding="utf-8")
+
+    export_cards(data_dir=data_dir, db_path=db)
+
+    conn = open_test_db(db)
+    row = conn.execute(
+        "SELECT synced_to_anki, anki_note_id, audio_path, tts_provider, tts_voice, tts_render_version FROM cards WHERE root_id = '妥協(だきょう)'"
+    ).fetchone()
+    conn.close()
+    assert row == (1, 999, "tts_new_azure.mp3", "azure", "ja-JP-NanamiNeural", "azure-ssml-v2")
+
 def test_known_words_mirror_roundtrip(tmp_path, monkeypatch):
     src = str(tmp_path / "src.db")
     data_dir = tmp_path / "data"
