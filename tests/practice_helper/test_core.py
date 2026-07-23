@@ -454,3 +454,19 @@ def test_log_file_inputs_override_positionals(tmp_path):
     row = conn.execute("SELECT prompt_ko, user_answer FROM attempts").fetchone()
     conn.close()
     assert row == ('여러 줄\n"따옴표" 포함', "彼は「妥協」を拒んだ。")
+
+def test_root_ids_for_note_ids_chunks_past_sqlite_var_limit(tmp_path):
+    # Live-lapse enrichment can pass every leech/high-lapse note id at once; the id list is
+    # chunked so it can't blow SQLite's bound-variable cap (~999). note id 1500 sits in a
+    # later chunk (not the first), so a no-chunk regression would fail this.
+    from anki_generator.practice_helper import repository
+    db = str(tmp_path / "t.db")
+    conn = open_test_db(db)
+    conn.execute(
+        "INSERT INTO cards (root_id, front, back_reading, target_word, pos, anki_note_id)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        ("妥協(だきょう)", "f", "r", "x", "명사", 1500))
+    conn.commit()
+    rows = repository.root_ids_for_note_ids(conn, list(range(2000)))
+    conn.close()
+    assert rows == [("妥協(だきょう)", 1500)]

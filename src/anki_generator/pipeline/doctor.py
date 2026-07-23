@@ -1,3 +1,4 @@
+import json
 import sys
 from typing import cast
 
@@ -159,6 +160,23 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
                         f"lines — run 'anki-gen db export' and commit data/")
     except Exception as e:
         add("practice_data_backup", False, str(e))
+
+    # Registered legacy sources live in `meta`, not a table — without the mirror a rebuilt DB
+    # loses the deck query/field mapping and `legacy retire-promoted` matches zero notes.
+    try:
+        with db_helper.connection(db_path) as conn:
+            db_sources = len(json.loads(db_helper.get_meta(conn, "known_sources") or "{}"))
+        mirror_sources = db_helper.count_sources_lines()
+        if db_sources or mirror_sources:
+            if db_sources == mirror_sources:
+                add("legacy_sources", True,
+                    f"{db_sources} registered source(s) ↔ {mirror_sources} JSONL lines")
+            else:
+                add("legacy_sources", False,
+                    f"DB has {db_sources} registered source(s) but the mirror holds "
+                    f"{mirror_sources} — run 'anki-gen db export' and commit data/")
+    except Exception as e:
+        add("legacy_sources", False, str(e))
 
     if not config.ANKI_ENABLED:
         add("anki_connect", True, "disabled (ANKI_ENABLED=0) — generation-only machine")

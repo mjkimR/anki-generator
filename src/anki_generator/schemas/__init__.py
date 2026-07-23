@@ -52,6 +52,13 @@ from .legacy import (
     LegacyDeDuplicationDeckInfo,
     CmdArchiveDuplicatesResponse,
 )
+from .rescue import (
+    RescueCardInfo,
+    CmdRescueQueueResponse,
+    CmdCaptureFeedbackResponse,
+    CmdEditCardResponse,
+    CmdRetireCardResponse,
+)
 
 __all__ = [
     "ValidationError",
@@ -100,4 +107,9 @@ __all__ = [
     "CmdRetiredListResponse",
     "LegacyDeDuplicationDeckInfo",
     "CmdArchiveDuplicatesResponse",
+    "RescueCardInfo",
+    "CmdRescueQueueResponse",
+    "CmdCaptureFeedbackResponse",
+    "CmdEditCardResponse",
+    "CmdRetireCardResponse",
 ]

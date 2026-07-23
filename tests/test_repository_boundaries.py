@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 SRC_ROOT = Path(__file__).parents[1] / "src" / "anki_generator"
-FEATURE_PACKAGES = ("practice_helper", "legacy_helper", "pipeline")
+FEATURE_PACKAGES = ("practice_helper", "legacy_helper", "pipeline", "rescue_helper")
 SQL_METHODS = {"execute", "executemany", "executescript"}
 TRANSACTION_METHODS = {"commit", "rollback", "close"}
 

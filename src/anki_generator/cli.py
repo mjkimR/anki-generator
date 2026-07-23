@@ -5,6 +5,7 @@ from anki_generator.pipeline import (
 from anki_generator.db_helper import db_group
 from anki_generator.legacy_helper import legacy_group
 from anki_generator.practice_helper import practice_group
+from anki_generator.rescue_helper import rescue_group
 from anki_generator.validator.cli import validate_cmd
 from anki_generator.tts_helper.cli import tts_cmd
 from anki_generator.anki_connector.cli import push_file_cmd
@@ -31,6 +32,7 @@ main_cli.add_command(push_file_cmd)
 main_cli.add_command(db_group, name="db")
 main_cli.add_command(legacy_group, name="legacy")
 main_cli.add_command(practice_group, name="practice")
+main_cli.add_command(rescue_group, name="rescue")
 
 def main():
     main_cli()

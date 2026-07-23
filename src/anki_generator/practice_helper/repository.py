@@ -3,6 +3,7 @@
 This module owns persistence and query semantics for attempts, confusions, and card
 feedback. It never owns the caller's transaction.
 """
+from anki_generator.common import chunked, SQL_VAR_CHUNK
 
 
 def insert_attempt(conn, attempt_uuid, root_id, prompt_ko, user_answer, verdict,
@@ -155,14 +156,16 @@ def attempt_period_stats(conn, days=None):
 
 
 def root_ids_for_note_ids(conn, note_ids):
-    if not note_ids:
-        return []
-    placeholders = ",".join("?" for _ in note_ids)
-    return conn.execute(
-        f"SELECT root_id, anki_note_id FROM cards"
-        f" WHERE anki_note_id IN ({placeholders})",
-        list(note_ids),
-    ).fetchall()
+    # Chunk the id list so a large live-lapse set can't exceed SQLite's bound-variable limit.
+    rows = []
+    for chunk in chunked(note_ids, SQL_VAR_CHUNK):
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(conn.execute(
+            "SELECT root_id, anki_note_id FROM cards"
+            f" WHERE anki_note_id IN ({placeholders})",
+            chunk,
+        ).fetchall())
+    return rows
 
 
 def distinct_card_root_ids(conn):
