@@ -29,16 +29,6 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 
 ## Next
 
-### Leech rescue and feedback harvest
-
-- **Outcome:** turn flags and high lapse counts into a guided diagnosis before choosing a
-  treatment.
-- **Exit criteria:** inspect flagged or leech cards, capture the failure category, and apply one
-  explicit action: promote an unknown example word, add a reading tip, regenerate, update, or
-  retire.
-- **Design constraints:** reuse the shared archive primitive and generalize note-field update
-  plumbing instead of adding parallel Anki update helpers.
-
 ### Confusion-card experiment
 
 - **Outcome:** validate a discrimination-card format using real confusion groups.
@@ -46,49 +36,6 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
   member as the answer direction; user feedback determines whether a second repo-owned note
   model should ship.
 - **Dependencies:** confusion capture and feedback harvest data.
-
-### Single-kanji on/kun acquisition deck (Jōyō)
-
-- **Outcome:** a deck that teaches the isolated-kanji → Japanese on/kun reading map. This map
-  is separate from word-level reading fluency — reading 綱領 as こうりょう does not supply
-  綱 alone as コウ/つな — so for this learner it is new acquisition, not consolidation of
-  something implicitly known. It supersedes the existing Korean-only kanji deck (kanji →
-  Korean gloss/reading), which becomes a strict subset.
-- **Korean-reading bridge:** the on-yomi is reachable from the already-known Sino-Korean
-  reading, which is cognate (강→コウ, 학→ガク, 굴→クツ); the non-cognate kun-yomi is anchored
-  to a word the learner already knows (手綱→たづな). The two halves of the card are learned by
-  different mechanisms on purpose.
-- **Card shape:** front is the bare kanji; back carries on-yomi with the official reading
-  **count**, kun-yomi, one representative anchor word per reading, the Korean gloss/reading,
-  and a one-line cognate/pitfall tip. The count is the active boundary: count=1 is usually
-  bridge-predictable and graduates fast under SRS, while count=2+ (a 呉音/漢音 split, where the
-  Korean reading merged to one) is where the real new learning sits. A sparse, never-counted
-  additional-readings row holds frequent 非-音訓表 rules (中→ジュウ, stated as a rule with
-  examples); 熟字訓 stay in the vocabulary layer.
-- **Data build** (bounded to the fixed ~2,136 Jōyō set, code-packaged like
-  `validator/joyo.py`): the Korean gloss/reading is absorbed from the existing kanji deck (the
-  record of what the learner already knows — a cold dictionary yields archaic 訓 like 綱→벼리),
-  with KANJIDIC2 `korean_h` as fallback for gaps. The Japanese side is fresh: 常用漢字表 defines
-  the closed set and count, and targeted search fills anchor-word selection. No TTS.
-- **Container:** sweep the whole Jōyō set as new cards in one throttled deck (the
-  hyōgai-recognition new-cards/day pattern); SRS self-sorts difficulty. Retire the old
-  Korean-only kanji deck reversibly; its exact scope (roughly full-Jōyō, unconfirmed) need not
-  be pinned down because the new sweep is exhaustive regardless.
-- **Relation to confusion cards:** intra-kanji reading schema only. Visual look-alike
-  discrimination (綱/網, 掘/堀, 候/侯) from `doctor` harvest stays with the separate
-  *Confusion-card experiment*.
-- **Exit criteria:** define the repo-owned single-kanji note model and deck; validate the data
-  build on a pilot batch that includes several count=2+ kanji; confirm the old deck's
-  retirement is reversible before the sweep.
-- **Design record:** [ADR-0011](decisions/0011-single-kanji-reading-acquisition.md) (Proposed)
-  carries the full rationale.
-- **Follow-up (enrichment pass, not on the critical path):** once the deck is live, a batched
-  LLM pass (`data/kanji/WORK_INSTRUCTION.md`) fills `special_readings` productive-rule notes
-  (中→ジュウ) where warranted — never counted, so the count boundary stays pure — and mops up
-  residual 漢/呉 category and gloss nits. Card updates ride on `updateNoteFields` (adding the
-  Special field), so it needs no new identity/deletion plumbing. Run when time permits.
-- **Dependencies:** [ADR-0006](decisions/0006-repository-owned-anki-model.md) (repo-owned
-  model plumbing) and [ADR-0005](decisions/0005-reversible-archive.md) (reversible retirement).
 
 ### Exposure-aware legacy retirement
 
@@ -99,21 +46,29 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 - **Open work:** weave a few natural exposure hints into generation, consume exposure in queue
   ordering, and support grammar-expression matching.
 
-### Text-mining batch mode
-
-- **Outcome:** accept a long Japanese text, extract advanced candidates, deduplicate them, ask
-  for list confirmation, and run the normal pipeline per approved word.
-- **Exit criteria:** batch extraction does not bypass validation, duplicate checks, or the
-  existing working-file lifecycle.
-
 ## Later
+
+### Enrich the single-kanji acquisition deck
+
+- **Outcome:** raise the shipped `AnkiGen Kanji` deck's editorial quality without disturbing the
+  count boundary — fill `special_readings` productive-rule notes (中→ジュウ, never counted) and
+  mop up residual 漢/呉 category and gloss nits.
+- **Exit criteria:** batched LLM pass per `data/kanji/WORK_INSTRUCTION.md`; card updates ride on
+  `updateNoteFields` (adding the `Special` field), so no new identity or deletion plumbing is
+  needed.
+- **Dependencies:** [ADR-0011](decisions/0011-single-kanji-reading-acquisition.md). Not on the
+  critical path — run when time permits.
 
 ### Card update and delete synchronization
 
 - **Outcome:** update an existing Anki note when card content changes and propagate intentional
   deletion safely.
-- **Exit criteria:** define stable edit identity, content-change detection, in-place
-  `updateNoteFields`, orphan handling, and cross-machine tombstones as one design.
+- **Shipped slice:** in-place field edits already push directly via the shared
+  `updateNoteFields` primitive ([ADR-0012](decisions/0012-in-place-card-edits.md)) — used by
+  leech rescue's `edit` treatment. What remains is the *automatic* half.
+- **Exit criteria:** define stable edit identity, content-change *detection* (so an edited card
+  re-pushes without a manual command), orphan handling, and cross-machine tombstones as one
+  design.
 - **Constraint:** a local row deletion alone must never be treated as durable intent. See
   [ADR-0004](decisions/0004-identity-by-data-semantics.md) and
   [ADR-0005](decisions/0005-reversible-archive.md).

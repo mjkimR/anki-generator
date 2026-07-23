@@ -28,8 +28,9 @@ control flow enforceable even when prose instructions are misunderstood.
 
 - **Agent skills** under `src/anki_generator/skills/` are markdown playbooks. They do not
   contain or own Python code.
-- **Skill drivers** (`pipeline`, `legacy_helper`, `practice_helper`) orchestrate use cases.
-  A driver may import the shared platform but never another skill's driver.
+- **Skill drivers** (`pipeline`, `legacy_helper`, `practice_helper`, `rescue_helper`)
+  orchestrate use cases. A driver may import the shared platform but never another skill's
+  driver.
 - **Shared platform packages** (`db_helper`, `anki_connector`, `tts_helper`, `validator`,
   `schemas`, `common`) own reusable mechanics and cross-skill contracts.
 - **Persistence boundaries** keep connection lifecycle in `db_helper.session`, while SQL
@@ -66,6 +67,13 @@ See [skill drivers](architecture/skill-drivers.md),
   See [ADR-0009](decisions/0009-kanji-root-identity-kana-surface.md).
 - Select one TTS provider explicitly and require valid audio before an Anki push.
   See [ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md).
+- Edit a card in place — DB row, JSONL mirror, and (best-effort) the live note via the one
+  shared `updateNoteFields` primitive — rather than re-queueing it; deletion stays out of
+  scope. See [ADR-0012](decisions/0012-in-place-card-edits.md).
+- Teach the isolated-kanji on/kun reading map in a separate repo-owned deck keyed by the
+  kanji itself, where the official on-yomi count is the difficulty boundary and readings
+  outside the 音訓表 are never counted.
+  See [ADR-0011](decisions/0011-single-kanji-reading-acquisition.md).
 
 ## Runtime modes
 

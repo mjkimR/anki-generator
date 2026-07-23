@@ -13,6 +13,8 @@ It takes Japanese words, inflections, or sentences, extracts high-value targets,
 - **Direct Anki Integration**: Uses the AnkiConnect API to automatically register card notes into a targeted deck.
 - **Git-Managed Card Design**: The Anki note model (fields, templates, CSS) lives in this repo under `src/anki_generator/anki_model/` and is created/synced to Anki automatically — edit the CSS in git, and the next push updates Anki. Readings use Anki's built-in `{{furigana:}}` ruby rendering.
 - **Output Practice & Discovery**: A second agent skill drills Korean→Japanese *production* of your weak words (or a chosen topic), grades the answer with a code + model split, and auto-registers words discovered mid-practice as new cards — so practice grows the vocabulary, not just reviews it (`anki-gen practice …`).
+- **Leech Rescue & Feedback Harvest**: An agent skill that triages struggling cards — Anki leeches, flagged, and high-lapse — one at a time, diagnoses why each fails, and applies one treatment (add a reading tip, fix a field in place, regenerate, promote an unknown example word, or reversibly retire), recording every diagnosis for later review (`anki-gen rescue …`).
+- **Text-Mining Batch Mode**: An agent skill that turns a long Japanese text into cards — it extracts the advanced vocabulary, batch-deduplicates the whole list against your existing cards and legacy decks (`anki-gen db check-batch`), confirms a clean list with you, then generates each approved word through the normal generation pipeline.
 
 ## Project Structure
 

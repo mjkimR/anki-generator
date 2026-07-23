@@ -53,9 +53,11 @@ a designed-for normal state everywhere in this codebase, never an error path.
     imports only, every package imports it).
   - **Skill-specific drivers** that orchestrate the platform: `pipeline/` (the
     deterministic card-generation driver, the only orchestrator), `legacy_helper/`
-    (legacy-deck migration mechanics), and `practice_helper/` (output-practice + confusion
-    capture — the `attempts`/`confusions`/`card_feedback` schemas and mirrors are shared DB
-    infrastructure, while practice-specific SQL lives in `practice_helper/repository.py`).
+    (legacy-deck migration mechanics), `practice_helper/` (output-practice + confusion
+    capture — the `attempts`/`confusions` schemas and mirrors are shared DB infrastructure,
+    while practice-specific SQL lives in `practice_helper/repository.py`), and
+    `rescue_helper/` (leech/flag diagnosis + the `card_feedback` harvest + in-place edit /
+    retire treatments; it is the `card_feedback` table's writer — [ADR-0012](decisions/0012-in-place-card-edits.md)).
     Each driver package keeps its SQL in a sibling `repository.py`; `core.py` orchestrates
     repository calls and owns the transaction boundary via `db_helper.transaction()`. A
     repository accepts a caller-owned connection and never commits, rolls back, or closes it.
@@ -67,8 +69,11 @@ a designed-for normal state everywhere in this codebase, never an error path.
   syncs drift. Loaded by `anki_connector` regardless of skill, so it lives with the code.
 - `src/anki_generator/skills/<name>/SKILL.md` — runtime agent instructions, **markdown
   only** (no code): `anki_card_generator` (card generation), `legacy_migration`
-  (legacy-deck playbook), and `output_practice` (한→일 작문 practice + confusion capture +
-  discovery). `setup_symlinks.sh` symlinks each into `.agents/skills/` (the open
+  (legacy-deck playbook), `output_practice` (한→일 작문 practice + confusion capture +
+  discovery), `leech_rescue` (per-card diagnosis of leeches/flags → one treatment + the
+  `card_feedback` harvest), and `text_mining` (long-text → extract → `db check-batch`
+  dedup → confirm → normal generation pipeline per approved word). `setup_symlinks.sh`
+  symlinks each into `.agents/skills/` (the open
   agent-skills layout, e.g. Gemini CLI) **and** `.claude/skills/` (where Claude Code
   discovers project skills), auto-discovering every directory that carries a `SKILL.md`.
 - `tests/` — pytest unit tests, one directory per package mirroring the layout above.

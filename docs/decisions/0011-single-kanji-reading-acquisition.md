@@ -1,6 +1,6 @@
 # ADR-0011: Single-Kanji On/Kun Acquisition Deck with a Korean-Reading Bridge
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-22
 
 ## Context
@@ -115,7 +115,10 @@ force onto a single-kanji card.
 
 ## References
 
-- Roadmap: "Single-kanji on/kun acquisition deck (Jōyō)".
+- Shipped; current behavior is documented in
+  [Anki integration](../architecture/anki-integration.md) and
+  [data and synchronization](../architecture/data-and-sync.md). The remaining non-critical
+  enrichment pass is tracked in the [roadmap](../roadmap.md).
 - [ADR-0005](0005-reversible-archive.md) — reversible retirement of the superseded deck.
 - [ADR-0006](0006-repository-owned-anki-model.md) — repo-owned note-model plumbing.
 - [ADR-0009](0009-kanji-root-identity-kana-surface.md) — the throttled single-deck / new-cards-per-day

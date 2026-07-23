@@ -37,6 +37,14 @@ The retry count is kept in `cards/pending/.attempts.json`, outside the rewritten
 Mechanical errors remain hard failures; Janome reading cross-checks remain warnings because
 its advanced-vocabulary coverage is incomplete.
 
+**Text-mining batch mode** (the `text_mining` skill) is a front-end onto this same pipeline,
+not a separate driver: the agent extracts advanced candidates from a long text, the shared
+`db check-batch` command triages the deduped list against existing cards and the legacy registry
+(reusing the one-word `check_word` logic over a single connection), the user confirms, and each
+approved word is then generated through the ordinary pipeline above — so validation, the
+`(root_id, front)` duplicate key, and the one-file-per-word working-file lifecycle are never
+bypassed.
+
 ## Legacy migration
 
 `legacy_helper` provides deck-agnostic mechanics for inspecting and registering legacy decks,
@@ -67,6 +75,21 @@ Confusions are captured as groups rather than pairs. Output-practice `wrong-word
 add a group automatically; valid synonyms and blank answers do not. Words discovered during
 composition are sent through the normal card-generation skill instead of being inserted by
 the practice driver.
+
+## Leech rescue and feedback harvest
+
+`rescue_helper` turns Anki flags, leech tags, and high lapse counts on AnkiGen's own cards into
+a guided per-card diagnosis, then applies one treatment. Sourcing is read-only and best-effort:
+it queries Anki for struggling notes, joins them back to local content by note id (falling back
+to the reserved RootId field when no local row exists yet), and degrades to an empty queue when
+Anki is closed. The diagnosed failure category and the chosen action are recorded into
+`card_feedback` — the harvest — so recurring weaknesses become visible over time.
+
+Two treatments are mechanical: an in-place field edit (DB + mirror via `rewrite_cards`, plus a
+direct live-note push through the shared `update_note_fields` primitive), and a reversible
+retire (the shared archive primitive). Regeneration and promoting an unknown example word are
+delegated to the card-generation and legacy-migration skills; the driver only records that the
+action was taken. See [ADR-0012](../decisions/0012-in-place-card-edits.md).
 
 Command syntax and session recipes belong in `anki-gen --help` and the corresponding
 `SKILL.md`, not in this architecture document.

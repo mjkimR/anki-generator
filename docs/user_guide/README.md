@@ -42,6 +42,16 @@ pipeline validation → Korean meaning/tip pass → DB persist → TTS synthesis
 → `data/` mirror refresh. All you see is the final report. If a word already exists, it
 asks whether to add a card for a different sense or skip.
 
+### From a long text (batch mining)
+
+Hand the agent a whole article, email thread, or page of notes and ask it to pull the
+study-worthy words. It extracts the advanced vocabulary, dedup-checks the whole list at once
+(`db check-batch`) against your existing cards and legacy decks, then **shows you the cleaned
+list — new words plus already-known ones flagged with their lapse counts — and waits for you to
+trim or approve** before making anything. Approved words then go through the exact same
+generation pipeline as above (nothing is bypassed). Great for turning a piece of reading into a
+batch of cards in one pass.
+
 **Always close a session with the backup commit**: `data/` is its own private repo, so you can easily sync it using the sync script (you can also just ask the agent to do it).
 
 ```bash
@@ -79,7 +89,31 @@ closed (it re-opens as a fresh group if the mix-up recurs); `이 단어는 그�
 word stops surfacing in practice until it actually fails again; `요즘 정답률 어때?` → the
 agent reads `practice stats` back to you.
 
-## 3. Anki can stay closed
+## 3. Rescuing struggling cards
+
+The newest skill repairs cards that aren't sticking — Anki **leeches**, **flagged** cards, and
+**high-lapse** cards. Instead of guessing, you work through them one at a time with the agent.
+Just ask it to clean up your leeches or fix the cards you keep getting wrong, and it pulls the
+queue (`rescue queue`), shows one struggling card with its Anki signals (lapses, flags, leech)
+and its content, and helps you name **why** it fails (reading, meaning, an unknown word in the
+example, a look-alike, the sentence itself).
+
+For each card you pick **one** treatment and the agent runs it:
+
+- **Add a reading tip / fix a field** — edited in place: the DB, the `data/` mirror, and the
+  live Anki note all change at once, with the card's review history preserved (no scheduling
+  reset).
+- **Regenerate** the whole card, or **promote an unknown example word** into its own card —
+  handed off to the card-generation / legacy skills.
+- **Retire** the card — suspended + tagged, fully reversible (never deletion).
+
+Whatever you decide is recorded (the *feedback harvest*), so over time the recurring kinds of
+failure become visible. Run rescue with Anki open: the queue needs it (it comes back empty when
+Anki is closed), and editing a card that's already in Anki needs Anki reachable so the change
+actually lands there — otherwise the edit is refused with nothing changed (a card not yet pushed
+can be edited offline and rides the next push). Ends the same way as every session: commit `data/`.
+
+## 4. Anki can stay closed
 
 Anki being closed is not an error. Cards are safely persisted in the DB as pending, and
 **the next time you make cards with Anki open, the backlog is pushed automatically along
@@ -97,7 +131,7 @@ TTS is fail-closed: if the selected provider is unavailable, the affected card i
 pushed silently and remains pending. Fix the reported provider configuration or service
 error, then rerun `uv run anki-gen sync-pending`.
 
-## 4. Backup & multiple machines
+## 5. Backup & multiple machines
 
 - **Backup = commit & push inside `data/`.** Card data never enters the code repo
   (gitignore blocks it).
@@ -109,7 +143,7 @@ error, then rerun `uv run anki-gen sync-pending`.
   upload/download is forced — see `../architecture/data-and-sync.md` →
   *Multi-machine discipline*.)
 
-## 5. Legacy deck work (promotion sessions)
+## 6. Legacy deck work (promotion sessions)
 
 Promoting weak words from the old decks into fresh cards is also driven by talking to
 the agent — it follows the legacy-migration playbook:
@@ -124,7 +158,7 @@ the agent — it follows the legacy-migration playbook:
 
 Legacy work also ends the same way: commit & push `data/`.
 
-## 6. Command cheatsheet
+## 7. Command cheatsheet
 
 Everything lives under the single `anki-gen` entry point (`uv run anki-gen --help` lists
 it all). An alias keeps it short (`~/.zshrc`):
@@ -143,7 +177,9 @@ alias akg='uv run anki-gen'
 | `akg practice weak-words` | What to practice next — your weakest words (uses live Anki stats when open, offline blend otherwise) |
 | `akg practice stats` | Practice report: correct rate, struggling words (`--word "単語(よみ)"` for one word's history) |
 | `akg practice list-confusions` | Review the captured confusable-word groups (`--all` includes resolved ones) |
+| `akg rescue queue` | Surface your leeching / flagged / high-lapse cards to triage (read-only; empty when Anki is closed) |
 | `akg db check "単語"` | Does this word already have a card + was it known in the legacy decks |
+| `akg db check-batch … / --file <list>` | Dedup-check many mined candidates at once (text-mining batch mode): new / has-card / known-legacy |
 | `akg db pending` | List cards not yet pushed to Anki |
 | `akg db export` / `db import` | Manual DB↔JSONL mirror (doctor tells you the direction) |
 | `akg legacy weak-queue --limit 10` | Promotion candidates (most lapses first) |
@@ -152,15 +188,16 @@ alias akg='uv run anki-gen'
 | `akg legacy retired-list` / `coverage` | Retirement ledger / example-sentence exposure (no Anki needed) |
 
 The rest (`run`, `snapshot`, `archive-duplicates`, `practice check`/`log`/`add-confusion`/
-`dismiss`/`resolve-confusion`, …) are commands the agent runs for you mid-conversation —
-you'll rarely type them yourself.
+`dismiss`/`resolve-confusion`, `rescue capture`/`edit`/`retire`, …) are commands the agent runs
+for you mid-conversation — you'll rarely type them yourself.
 
-## 7. Symptom → remedy
+## 8. Symptom → remedy
 
 | Symptom | Remedy |
 |---|---|
 | Something's wrong (cause unknown) | `doctor` first. It usually tells you the fix direction too |
 | After a fresh clone, Claude doesn't know the skills | `./setup_symlinks.sh` (the symlinks are gitignored, so they don't travel with a clone) |
+| A card keeps failing / became a leech | Ask the agent to rescue it — it triages `rescue queue` and applies one treatment per card (tip, fix, regenerate, retire) |
 | A new card is pending after a TTS error | Fix the provider error, then run `sync-pending` |
 | An older synced card has no audio | `backfill-audio` (network required) |
 | Listening/Hyōgai cards showing in the vocab deck | `sync-decks` |
@@ -169,7 +206,7 @@ you'll rarely type them yourself.
 | Worried a card pushed on another machine gets re-pushed here | It won't — sync state travels via git and merges monotonically, with Anki's duplicate detection as a second net |
 | Want to change the card design | Edit the CSS/HTML in `anki_model/` → auto-synced to Anki on the next push. Don't edit inside the Anki app (the repo version overwrites it on the next sync) |
 
-## 8. Things not to do
+## 9. Things not to do
 
 - **Committing card data into the code repo** — gitignore blocks it, but remember:
   `data/` commits always happen *inside* `data/`.

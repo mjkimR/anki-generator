@@ -19,6 +19,14 @@ document for your job and skip the others.
   topic-based session, or to drill their weak words: this is the `output_practice`
   skill's job. Invoke it and follow its `SKILL.md`. No other doc in this repo is
   required reading for these skill roles.
+- **Leech rescue** — the user wants to work through struggling cards (Anki leeches,
+  flagged cards, high-lapse cards): diagnose why each fails and apply one treatment
+  (add a tip, fix a field, regenerate, promote an unknown word, or retire). This is the
+  `leech_rescue` skill's job. Invoke it and follow its `SKILL.md`.
+- **Text mining** — the user hands a long Japanese text and wants its study-worthy
+  vocabulary turned into cards: extract candidates, batch-dedup them (`db check-batch`),
+  confirm the list, then generate each approved word through the normal pipeline. This is
+  the `text_mining` skill's job. Invoke it and follow its `SKILL.md`.
 - **Working on the codebase** — changing or extending the pipeline, tests, or docs:
   read **`docs/development.md` before modifying code**. It carries the commands, the
   layout, and the settled architectural invariants that must not be broken without an

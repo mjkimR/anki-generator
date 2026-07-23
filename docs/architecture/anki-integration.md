@@ -43,6 +43,21 @@ single `ANKI_HYOGAI_DECK` (its one new-cards/day limit throttles the familiariza
 stream; attention weighting is per card via the badge). Both sweeps are idempotent and run
 after pushes as well as by `anki-gen sync-decks`.
 
+## Single-kanji acquisition model
+
+A second repo-owned model, `AnkiGen Kanji`, teaches the isolated-kanji → Japanese on/kun
+reading map ([ADR-0011](../decisions/0011-single-kanji-reading-acquisition.md)). It is a
+distinct entity from vocabulary cards: identity is the bare kanji (one card per kanji), the
+front is the kanji alone, and there is no TTS. `ensure_kanji_model()` reuses the same
+create-or-synchronize and append-only field discipline as the vocabulary model; its fields
+are `Kanji`, `Onyomi`, `OnCount`, `Kunyomi`, `KrGloss`, `KrReading`, `Tip`, and `Special`.
+
+Because Anki templates cannot loop over a variable-length reading list, `push_kanji_card()`
+pre-renders the on-yomi and kun-yomi (with their anchor words and the count badge) to field
+HTML at push time and writes the note directly into `ANKI_KANJI_DECK`; there is no post-hoc
+deck routing. `OnCount` is the official on-yomi count and the card's difficulty boundary —
+readings outside the 音訓表 live in `Special` and are never counted.
+
 ## Push and update behavior
 
 Cards are mapped from structured fields; the combined visual back is a rendering concern, not

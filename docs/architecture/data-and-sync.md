@@ -7,6 +7,7 @@ This document describes the current persistence, backup, and multi-machine model
 | Data | Operational owner | Durable transport or backup |
 |---|---|---|
 | Generated cards and sync state | local SQLite | `data/cards/*.jsonl` |
+| Single-kanji acquisition cards | local SQLite | `data/kanji_cards/*.jsonl` |
 | Known-word registry | local SQLite, refreshed from Anki | `data/known_words/*.jsonl` |
 | Practice attempts and feedback | local SQLite | practice JSONL partitions |
 | Review history and scheduling | Anki collection | AnkiWeb |
@@ -26,6 +27,16 @@ timestamp is supplied. `anki_note_id` is a downstream handle, not the card's ide
 
 `audio_path` stores a bare filename so database and JSONL records survive checkout moves.
 `synced_to_anki` is the sync queue; there is no separate queue file.
+
+### Single-kanji acquisition cards
+
+`kanji_cards` is a first-class mirrored table like `cards`, but a distinct entity: identity
+is `UNIQUE(kanji)`, one row per kanji. The on/kun reading lists and their anchor words are
+stored as JSON columns because the count varies per kanji, and `special_readings` holds
+never-counted 非-音訓表 readings ([ADR-0011](../decisions/0011-single-kanji-reading-acquisition.md)).
+It reconciles and mirrors through `data/kanji_cards/*.jsonl` under the same merge-then-mirror
+rules — `synced_to_anki` only advances, `anki_note_id` fills once — and `anki-gen doctor`
+checks DB-row / JSONL-line parity for it alongside the other tables. No TTS.
 
 ### Known words and derived exposure
 
