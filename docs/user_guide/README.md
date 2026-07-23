@@ -20,8 +20,8 @@
    AZURE_SPEECH_KEY=<your-key>
    AZURE_SPEECH_REGION=<your-region>
    ```
-   Set `TTS_PROVIDER=edge` only when Edge is intentionally desired. Provider failures do
-   not fall back automatically.
+   Set `TTS_PROVIDER=edge` or `TTS_PROVIDER=aivis` (AivisSpeech API; `AIVIS_API_URL`, `AIVIS_SPEAKER_ID`)
+   when desired. Provider failures do not fall back automatically.
 3. Verify with the doctor:
    ```bash
    uv run anki-gen doctor

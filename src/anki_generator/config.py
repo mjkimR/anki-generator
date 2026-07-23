@@ -88,9 +88,54 @@ ANKI_KANJI_DECK = os.getenv("ANKI_KANJI_DECK", "Japanese::Kanji")
 # which happens at push time) and reports that committing data/ is all that's needed.
 ANKI_ENABLED = os.getenv("ANKI_ENABLED", "1").strip().lower() not in ("0", "false", "no")
 
+def resolve_aivis_api_url() -> str:
+    url = os.getenv("AIVIS_API_URL", "http://127.0.0.1:10101")
+    is_localhost = "localhost" in url or "127.0.0.1" in url
+
+    import socket
+    import struct
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(f"{url.rstrip('/')}/speakers")
+        with urllib.request.urlopen(req, timeout=0.3):
+            return url
+    except Exception:
+        pass
+
+    if is_localhost:
+        try:
+            with open("/proc/net/route", "r", encoding="utf-8") as f:
+                for line in f:
+                    fields = line.strip().split()
+                    if len(fields) >= 3 and fields[1] == "00000000":
+                        hex_ip = fields[2]
+                        gateway_ip = socket.inet_ntoa(struct.pack("<L", int(hex_ip, 16)))
+                        test_url = f"http://{gateway_ip}:10101"
+                        try:
+                            req = urllib.request.Request(f"{test_url}/speakers")
+                            with urllib.request.urlopen(req, timeout=0.3):
+                                return test_url
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    return url
+
+
 # TTS configuration
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "azure").strip().lower()
 TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
+AIVIS_API_URL = resolve_aivis_api_url()
+AIVIS_SPEAKER_ID = os.getenv("AIVIS_SPEAKER_ID", "888753760")
+AIVIS_SPEED_SCALE = float(os.getenv("AIVIS_SPEED_SCALE", "1.0"))
+AIVIS_INTONATION_SCALE = float(os.getenv("AIVIS_INTONATION_SCALE", "1.0"))
+AIVIS_PITCH_SCALE = float(os.getenv("AIVIS_PITCH_SCALE", "0.0"))
+AIVIS_VOLUME_SCALE = float(os.getenv("AIVIS_VOLUME_SCALE", "1.0"))
+AIVIS_ENABLE_UPSPEAK = os.getenv("AIVIS_ENABLE_UPSPEAK", "1").strip().lower() not in ("0", "false", "no")
+
+
 
 # Temporary directory for media files. Created on demand by the write sites
 # (tts_helper.generate_speech mkdir's it before saving) — never at import time, so

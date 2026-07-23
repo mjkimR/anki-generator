@@ -103,9 +103,9 @@ an explicit user decision and a superseding ADR.
   (`synced_to_anki` only ratchets up)
   ([ADR-0002](decisions/0002-merge-then-mirror-sync.md)).
 - **TTS happens at push time, never at generation time** — audio is made on the machine
-  that pushes. `TTS_PROVIDER` explicitly selects `azure` (default) or `edge`; provider
+  that pushes. `TTS_PROVIDER` explicitly selects `azure` (default), `edge`, or `aivis`; provider
   failures never fall back or push a silent note. Azure renders whole annotated
-  pronunciation units as SSML substitutions; Edge speaks `reading_to_kana(back_reading)`.
+  pronunciation units as SSML substitutions; Edge and Aivis speak `reading_to_kana(back_reading)`.
   The cache key includes provider, renderer version, voice, and annotated input
   ([ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md)).
 - **`audio_path` stores a bare filename**, resolved against `media/` on read.

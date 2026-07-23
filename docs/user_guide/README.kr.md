@@ -13,7 +13,7 @@
    AZURE_SPEECH_KEY=<your-key>
    AZURE_SPEECH_REGION=<your-region>
    ```
-   Edge를 의도적으로 사용할 때만 `TTS_PROVIDER=edge`로 설정합니다. Provider 실패 시 다른 엔진으로 자동 전환되지 않습니다.
+   Edge나 AivisSpeech를 사용할 경우 `TTS_PROVIDER=edge` 또는 `TTS_PROVIDER=aivis`(`AIVIS_API_URL`, `AIVIS_SPEAKER_ID` 설정)로 지정합니다. Provider 실패 시 다른 엔진으로 자동 전환되지 않습니다.
 3. 환경 점검은 `doctor` 명령어로 수행:
    ```bash
    uv run anki-gen doctor

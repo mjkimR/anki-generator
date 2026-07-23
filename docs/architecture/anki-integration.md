@@ -72,14 +72,14 @@ are treated as already synchronized so retries remain idempotent.
 ## TTS
 
 TTS runs at push time through the provider explicitly selected by `TTS_PROVIDER`: `azure`
-(default) or `edge`. There is no automatic fallback. Azure receives SSML with Katakana kanji-run
+(default), `edge`, or `aivis`. There is no automatic fallback. Azure receives SSML with Katakana kanji-run
 substitutions (`<sub alias="ハ">果</sub>てた`) so G2P never misreads a kanji or voices a
 reading-initial `は/へ` as the particle `わ/え`, while leaving okurigana and particles outside `sub`
 nodes in natural Japanese context so genuine topic particles are still read correctly. Inter-word
 half-width spaces between bunsetsu are **preserved** in SSML content: they mark word boundaries so
 that a plain-hiragana segment beginning with `は` is not fused onto the preceding token and misread
 as topic particle `わ (wa)`. This correctness depends on the validator's spacing convention —
-particles hug the preceding word and a space precedes each new bunsetsu. Edge receives the validated
+particles hug the preceding word and a space precedes each new bunsetsu. Edge and Aivis receive the validated
 kana produced by `reading_to_kana(back_reading)`.
 
 `anki-gen backfill-audio --force` enables bulk re-synthesis of already-synced notes when renderer

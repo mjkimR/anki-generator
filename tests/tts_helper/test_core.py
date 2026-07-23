@@ -165,3 +165,51 @@ def test_azure_cancellation_preserves_service_diagnostics():
     assert details["service_error_code"] == "AuthenticationFailure"
     assert details["cancellation_reason"] == "Error"
     assert details["service_message"] == "The subscription key and region do not match."
+
+
+def test_aivis_synthesis_success(tmp_path, monkeypatch):
+    class DummyResponse:
+        def __init__(self, data):
+            self._data = data
+        def read(self):
+            return self._data
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+
+    def mock_urlopen(req, timeout=10):
+        if "audio_query" in req.full_url:
+            return DummyResponse(b'{"kana": " test"}')
+        return DummyResponse(b"fake_audio_bytes")
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    out = tmp_path / "aivis_out.mp3"
+    result = asyncio.run(tts_core.generate_speech("果[は]てた", out, "888753760", "aivis"))
+
+    assert result["success"] is True
+    assert result["provider"] == "aivis"
+    assert result["render_version"] == "aivis-kana-v1"
+    assert out.exists()
+    assert out.read_bytes() == b"fake_audio_bytes"
+
+
+def test_aivis_synthesis_connection_failure(tmp_path, monkeypatch):
+    import urllib.request
+    import urllib.error
+
+    def mock_urlopen_fail(req, timeout=10):
+        raise urllib.error.URLError("Connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen_fail)
+
+    out = tmp_path / "aivis_out.mp3"
+    result = asyncio.run(tts_core.generate_speech("果[は]てた", out, "888753760", "aivis"))
+
+    assert result["success"] is False
+    assert result["provider"] == "aivis"
+    assert result["error_code"] == "aivis_exception"
+    assert result["retryable"] is True
+
