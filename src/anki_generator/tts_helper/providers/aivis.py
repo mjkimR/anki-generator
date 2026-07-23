@@ -58,26 +58,7 @@ class AivisTTSProvider(BaseTTSProvider):
             # 1. Primary G2P pass with Kanji (clean_html) to preserve natural Kanji pitch contours
             query_dict = _query_audio(cleaned_text)
 
-            # 2. If bracket furigana is present, verify Aivis Kanji G2P readings against validated reading
-            if "[" in text and cleaned_text != kana_text:
-                try:
-                    aq_kana = _query_audio(kana_text)
-                    kanji_aps = query_dict.get("accent_phrases", [])
-                    kana_aps = aq_kana.get("accent_phrases", [])
-
-                    kanji_phrases = [_ap_moras(ap) for ap in kanji_aps]
-                    kana_phrases = [_ap_moras(ap) for ap in kana_aps]
-
-                    if len(kanji_phrases) == len(kana_phrases):
-                        for idx in range(len(kanji_phrases)):
-                            if kanji_phrases[idx] != kana_phrases[idx]:
-                                # Targeted correction: replace misread Kanji accent phrase with validated Kana phrase
-                                kanji_aps[idx] = kana_aps[idx]
-                    else:
-                        # Fall back to Kana AudioQuery if phrase segmentation structure differs
-                        query_dict = aq_kana
-                except Exception:
-                    pass
+            # (Removed flawed Kana fallback logic that caused morphological parsing errors with pure Kana)
 
             # 3. Apply audio scale optimizations from config
             speed_scale = getattr(config, "AIVIS_SPEED_SCALE", 1.0)
