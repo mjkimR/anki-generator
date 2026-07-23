@@ -156,19 +156,26 @@ def upload_audio_to_anki(audio_path):
 class AudioUploadError(RuntimeError):
     """Audio was synthesized locally but could not be stored in Anki media."""
 
+def update_note_fields(note_id, fields):
+    """Update named fields of an existing note in place, leaving every other field
+    untouched (updateNoteFields). The shared note-update primitive: audio backfill, leech
+    rescue's in-place edits, and eventual card-edit sync all push through here instead of
+    each minting its own updateNoteFields call. `fields` maps Anki field name → value
+    (e.g. {"Tip": "..."}); an empty mapping is a no-op."""
+    if not fields:
+        return
+    invoke("updateNoteFields", note={"id": note_id, "fields": fields})
+
 def update_note_audio(note_id, audio_path):
-    """Backfills the Audio field of an existing note: uploads the media file, then
-    updates only that field via updateNoteFields — every other field stays untouched.
-    First piece of the shared note-update plumbing that card-edit sync and leech
-    rescue will generalize later."""
+    """Backfills the Audio field of an existing note: uploads the media file, then updates
+    only that field via update_note_fields — every other field stays untouched."""
     try:
         audio_filename = upload_audio_to_anki(audio_path)
     except Exception as audio_err:
         raise AudioUploadError(
             f"Anki media upload failed for '{Path(audio_path).name}': {str(audio_err)}"
         ) from audio_err
-    invoke("updateNoteFields",
-           note={"id": note_id, "fields": {"Audio": f"[sound:{audio_filename}]"}})
+    update_note_fields(note_id, {"Audio": f"[sound:{audio_filename}]"})
     return audio_filename
 
 def push_card(card, deck_name, model_name):

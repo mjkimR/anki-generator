@@ -257,3 +257,43 @@ def test_archive_notes_empty_input_touches_nothing(monkeypatch):
 
     monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     assert anki_connector.archive_notes([]) == 0
+
+def test_update_note_fields_pushes_only_named_fields(monkeypatch):
+    captured = {}
+
+    def fake_invoke(action, **params):
+        captured["action"] = action
+        captured["note"] = params.get("note")
+        return None
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    anki_connector.update_note_fields(99, {"Tip": "음독 きょう"})
+    assert captured["action"] == "updateNoteFields"
+    # Only the named field travels — every other field on the note stays untouched.
+    assert captured["note"] == {"id": 99, "fields": {"Tip": "음독 きょう"}}
+
+def test_update_note_fields_empty_is_a_noop(monkeypatch):
+    def fake_invoke(action, **params):
+        raise AssertionError("an empty field map must make no Anki call")
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    anki_connector.update_note_fields(99, {})  # must not raise
+
+def test_update_note_audio_routes_through_the_shared_primitive(tmp_path, monkeypatch):
+    # Audio backfill is now one caller of update_note_fields, not a parallel updateNoteFields.
+    audio = tmp_path / "妥協.mp3"
+    audio.write_bytes(b"audio")
+    captured = {}
+
+    def fake_invoke(action, **params):
+        if action == "storeMediaFile":
+            return params["filename"]
+        if action == "updateNoteFields":
+            captured["note"] = params["note"]
+            return None
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    fname = anki_connector.update_note_audio(42, str(audio))
+    assert fname == "妥協.mp3"
+    assert captured["note"] == {"id": 42, "fields": {"Audio": "[sound:妥協.mp3]"}}
