@@ -61,7 +61,8 @@ def _ensure_append_only_uuid(conn):
     for a device-independent `uuid` primary key. Any table still carrying an `id` column is
     rebuilt without it — rows keep their uuid if they have one, else get a fresh one. Keyed
     on the column being removed so it also cleans up an intermediate id+uuid layout. Empty in
-    practice (both tables are brand-new; card_feedback has no writer yet)."""
+    practice (both tables were created without an `id`; card_feedback is written by the
+    leech-rescue harvest, attempts by output practice)."""
     cursor = conn.cursor()
     for table, schema in (("attempts", ATTEMPTS_SCHEMA),
                           ("card_feedback", CARD_FEEDBACK_SCHEMA)):
@@ -206,6 +207,7 @@ def _mirror_files(data_dir):
     files.extend(config.get_data_confusions_dir(data_dir).glob("confusions*.jsonl"))
     files.extend(config.get_data_card_feedback_dir(data_dir).glob("card_feedback*.jsonl"))
     files.extend(config.get_data_kanji_dir(data_dir).glob("kanji_cards*.jsonl"))
+    files.extend(config.get_data_sources_dir(data_dir).glob("known_sources*.jsonl"))
     return sorted(files)
 
 def get_meta(conn, key):
@@ -245,53 +247,60 @@ def _derive_reading(word):
                    for ch in "".join(readings))
 
 def check_word(word, db_path=None):
+    """One-word dedup check. Thin wrapper: open a connection and delegate to `_check_word`.
+    Batch callers (`cmd_check_batch`) reuse `_check_word` over a single shared connection so
+    a long candidate list doesn't reopen (and re-reconcile) the DB once per word."""
     with connection(db_path) as conn:
-        cursor = conn.cursor()
-        escaped = word.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-        cursor.execute(
-            r"SELECT root_id, front, back_reading, back_meaning FROM cards"
-            r" WHERE root_id = ? OR root_id LIKE ? ESCAPE '\' ORDER BY id",
-            (word, f"{escaped}(%"),
-        )
-        rows = cursor.fetchall()
+        return _check_word(conn, word)
 
-        m = re.match(r"^([^(]+)\(([^)]+)\)$", word.strip())
-        base, reading = m.groups() if m else (word.split("(")[0].strip(), None)
-        keys = {word, base, normalize_known_word(base, reading)}
-        if reading:
-            keys.add(reading)
-        derived = None
-        if not reading and KANJI_RE.search(base):
-            # No reading given for a kanji word — derive one so kana-headword registry rows
-            # (word stored as ためらう, no norm_key reading) still register as known_legacy.
-            derived = _derive_reading(base)
-            if derived and derived != base:
-                keys.add(derived)
-                keys.add(normalize_known_word(base, derived))
-        # ADR-0009 reading bridge: surface cards owned under a reading-equivalent
-        # identity — a kana headword for a kanji query (躊躇う → ためらう(ためらう)'s
-        # cards) or any homophone root when the query itself is kana. Informational:
-        # the agent judges whether it is the same word or a genuine homophone.
-        reading_keys = {k for k in (reading, derived) if k}
-        if not KANJI_RE.search(base):
-            reading_keys.add(base)
-        seen_cards = {(r[0], r[1]) for r in rows}
-        reading_rows = []
-        for rk in sorted(reading_keys):
-            for r in cursor.execute(
-                    "SELECT root_id, front, back_reading, back_meaning FROM cards"
-                    " WHERE root_id LIKE '%(' || ? || ')' ORDER BY id", (rk,)):
-                if (r[0], r[1]) not in seen_cards:
-                    seen_cards.add((r[0], r[1]))
-                    reading_rows.append(r)
 
-        placeholders = ", ".join("?" for _ in keys)
-        known_rows = cursor.execute(
-            f"SELECT kind, word, source_deck, status, lapses FROM known_words"
-            f" WHERE word IN ({placeholders}) OR norm_key IN ({placeholders})"
-            f" ORDER BY kind, source_deck",
-            sorted(keys) * 2,
-        ).fetchall()
+def _check_word(conn, word):
+    cursor = conn.cursor()
+    escaped = word.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    cursor.execute(
+        r"SELECT root_id, front, back_reading, back_meaning FROM cards"
+        r" WHERE root_id = ? OR root_id LIKE ? ESCAPE '\' ORDER BY id",
+        (word, f"{escaped}(%"),
+    )
+    rows = cursor.fetchall()
+
+    m = re.match(r"^([^(]+)\(([^)]+)\)$", word.strip())
+    base, reading = m.groups() if m else (word.split("(")[0].strip(), None)
+    keys = {word, base, normalize_known_word(base, reading)}
+    if reading:
+        keys.add(reading)
+    derived = None
+    if not reading and KANJI_RE.search(base):
+        # No reading given for a kanji word — derive one so kana-headword registry rows
+        # (word stored as ためらう, no norm_key reading) still register as known_legacy.
+        derived = _derive_reading(base)
+        if derived and derived != base:
+            keys.add(derived)
+            keys.add(normalize_known_word(base, derived))
+    # ADR-0009 reading bridge: surface cards owned under a reading-equivalent
+    # identity — a kana headword for a kanji query (躊躇う → ためらう(ためらう)'s
+    # cards) or any homophone root when the query itself is kana. Informational:
+    # the agent judges whether it is the same word or a genuine homophone.
+    reading_keys = {k for k in (reading, derived) if k}
+    if not KANJI_RE.search(base):
+        reading_keys.add(base)
+    seen_cards = {(r[0], r[1]) for r in rows}
+    reading_rows = []
+    for rk in sorted(reading_keys):
+        for r in cursor.execute(
+                "SELECT root_id, front, back_reading, back_meaning FROM cards"
+                " WHERE root_id LIKE '%(' || ? || ')' ORDER BY id", (rk,)):
+            if (r[0], r[1]) not in seen_cards:
+                seen_cards.add((r[0], r[1]))
+                reading_rows.append(r)
+
+    placeholders = ", ".join("?" for _ in keys)
+    known_rows = cursor.execute(
+        f"SELECT kind, word, source_deck, status, lapses FROM known_words"
+        f" WHERE word IN ({placeholders}) OR norm_key IN ({placeholders})"
+        f" ORDER BY kind, source_deck",
+        sorted(keys) * 2,
+    ).fetchall()
 
     known_legacy = {
         "exists": bool(known_rows),
@@ -321,6 +330,58 @@ def check_word(word, db_path=None):
             for r in reading_rows
         ]
     return result
+
+
+def check_batch(words, db_path=None):
+    """Triage a list of candidate words for text-mining batch mode: dedup the input, then run
+    the *same* per-word dedup check (`_check_word`) over one connection. Classifies each word
+    so the agent can confirm a clean NEW list before generating — the duplicate check is not
+    bypassed at scale. Verdicts (priority order): `has-card` (an AnkiGen sense card already
+    exists), else `known-legacy` (in the legacy registry but no card yet — a valid candidate,
+    surfaced with its lapse info), else `new`."""
+    seen, unique, dup_in_input = set(), [], []
+    for raw in words:
+        w = (raw or "").strip()
+        if not w:
+            continue
+        if w in seen:
+            dup_in_input.append(w)
+            continue
+        seen.add(w)
+        unique.append(w)
+
+    new, has_card, known_legacy, results = [], [], [], []
+    with connection(db_path) as conn:
+        for w in unique:
+            r = _check_word(conn, w)
+            if r["exists"]:
+                verdict = "has-card"
+                has_card.append(w)
+            elif r["known_legacy"]["exists"]:
+                verdict = "known-legacy"
+                known_legacy.append(w)
+            else:
+                verdict = "new"
+                new.append(w)
+            item = {"word": w, "verdict": verdict, "count": r["count"]}
+            if r["matches"]:
+                item["matches"] = r["matches"]
+            if r["known_legacy"]["exists"]:
+                item["known_legacy"] = r["known_legacy"]
+            if r.get("reading_matches"):
+                item["reading_matches"] = r["reading_matches"]
+            results.append(item)
+
+    return {
+        "success": True,
+        "total_input": len(words),
+        "unique": len(unique),
+        "duplicates_in_input": dup_in_input,
+        "new": new,
+        "has_card": has_card,
+        "known_legacy": known_legacy,
+        "results": results,
+    }
 
 _ROOT_ID_RE = re.compile(r"^([^(]+)\(([^)]+)\)$")
 
@@ -682,6 +743,30 @@ def _reconcile_kanji_cards(conn, rows):
 
 def _read_kanji_cards(data_dir):
     return _read_jsonl(config.get_data_kanji_file(data_dir))
+
+def _read_sources(data_dir):
+    return _read_jsonl(config.get_data_sources_file(data_dir))
+
+def _reconcile_sources(conn, rows):
+    """Fold mirrored legacy-source registrations back into the `known_sources` meta entry.
+
+    Fill-if-missing per label: a label the DB already knows keeps its LOCAL mapping (same
+    content-preserving rule as every other reconcile), a label it lacks is adopted. That is
+    what makes the registration survive a DB rebuild — the mapping lives only in `meta`, so
+    without this a wiped DB silently loses it and `retire-promoted` matches zero notes."""
+    if not rows:
+        return 0
+    stored = json.loads(get_meta(conn, "known_sources") or "{}")
+    merged = 0
+    for row in rows:
+        label = (row or {}).get("label")
+        if not label or label in stored:
+            continue
+        stored[label] = {k: v for k, v in row.items() if k != "label"}
+        merged += 1
+    if merged:
+        _set_meta(conn, "known_sources", json.dumps(stored, ensure_ascii=False))
+    return merged
 
 # --- Practice-data reconcile + read helpers ---
 # attempts / card_feedback are append-only and keyed by a device-independent `uuid`: a mirror

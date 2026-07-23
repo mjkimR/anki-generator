@@ -5,7 +5,8 @@ from anki_generator import config
 
 from .core import (
     CARD_COLUMNS, KANJI_CARD_COLUMNS,
-    KNOWN_MIRROR_COLUMNS, _set_meta,
+    KNOWN_MIRROR_COLUMNS, _set_meta, get_meta,
+    _reconcile_sources, _read_sources,
     _row_to_card, _kanji_row_to_record, _reconcile_cards,
     _reconcile_known_words, _read_known_words,
     _partitions_fingerprint, _read_partition_cards,
@@ -95,6 +96,7 @@ def _export_cards(conn, data_dir):
     _reconcile_confusions(conn, _read_confusions(data_dir))
     _reconcile_card_feedback(conn, _read_card_feedback(data_dir))
     _reconcile_kanji_cards(conn, _read_kanji_cards(data_dir))
+    _reconcile_sources(conn, _read_sources(data_dir))
     columns = list(CARD_COLUMNS) + ["created_at"]
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
@@ -125,6 +127,12 @@ def _export_cards(conn, data_dir):
     kanji_records = [_kanji_row_to_record(row, kanji_columns) for row in kanji_rows]
     kanji_partitions = {"kanji_cards.jsonl": kanji_records} if kanji_records else {}
 
+    # Registered legacy sources live in the `known_sources` meta entry, not a table — mirror
+    # them too, or a DB rebuild silently loses the deck query/field mapping.
+    source_records = [{"label": label, **spec} for label, spec in
+                      sorted(json.loads(get_meta(conn, "known_sources") or "{}").items())]
+    source_partitions = {"known_sources.jsonl": source_records} if source_records else {}
+
     written, unchanged, removed = [], [], []
     _write_mirror_dir(config.get_data_cards_dir(data_dir), "cards-*.jsonl",
                       card_partitions, written, unchanged, removed)
@@ -133,6 +141,8 @@ def _export_cards(conn, data_dir):
     _write_practice_mirrors(data_dir, practice, written, unchanged, removed)
     _write_mirror_dir(config.get_data_kanji_dir(data_dir), "kanji_cards*.jsonl",
                       kanji_partitions, written, unchanged, removed)
+    _write_mirror_dir(config.get_data_sources_dir(data_dir), "known_sources*.jsonl",
+                      source_partitions, written, unchanged, removed)
 
     _set_meta(conn, "partitions_fingerprint", _partitions_fingerprint(data_dir))
 
@@ -140,6 +150,7 @@ def _export_cards(conn, data_dir):
     return {"success": True, "total_cards": len(rows), "known_words": len(known_rows),
             "attempts": attempts_n, "confusions": confusions_n,
             "card_feedback": feedback_n, "kanji_cards": len(kanji_rows),
+            "sources": len(source_records),
             "written": written, "unchanged": unchanged, "removed": removed,
             "data_dir": str(data_dir)}
 
@@ -205,3 +216,6 @@ def count_card_feedback_lines(data_dir=None):
 
 def count_kanji_lines(data_dir=None):
     return len(_read_kanji_cards(data_dir or config.DATA_DIR))
+
+def count_sources_lines(data_dir=None):
+    return len(_read_sources(data_dir or config.DATA_DIR))

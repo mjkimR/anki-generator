@@ -49,3 +49,15 @@ def generation_only_error(message) -> tuple[Any, int] | None:
     if config.ANKI_ENABLED:
         return None
     return {"status": "error", "message": message}, 1
+
+# SQLite caps bound variables per statement (SQLITE_MAX_VARIABLE_NUMBER: 999 on older builds,
+# 32766 since 3.32). A dynamic `IN (?, ?, …)` over an unbounded id list must chunk under the
+# conservative 999 or it raises "too many SQL variables". Repositories building such a clause
+# pass their id list through `chunked(ids, SQL_VAR_CHUNK)`.
+SQL_VAR_CHUNK = 900
+
+def chunked(seq, size):
+    """Yield successive lists of at most `size` items from `seq` (size must be >= 1)."""
+    items = list(seq)
+    for i in range(0, len(items), size):
+        yield items[i:i + size]

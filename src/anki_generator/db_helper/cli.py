@@ -2,7 +2,9 @@ import sys
 import json
 import click
 
-from .core import init_db, check_word, fetch_pending
+from pathlib import Path
+
+from .core import init_db, check_word, check_batch, fetch_pending
 from .insert import insert_cards
 from .mirror import export_cards, import_cards_data
 
@@ -22,6 +24,30 @@ def db_init():
 @click.argument("root_id", type=str)
 def db_check(root_id):
     result = check_word(root_id)
+    print(json.dumps(result, ensure_ascii=False))
+    sys.exit(0 if result.get("success", True) else 1)
+
+@db_group.command(name="check-batch",
+                  help="Dedup-check many candidate words at once (text-mining batch mode): "
+                       "pass words as arguments and/or --file (one per line). Classifies each "
+                       "as new / has-card / known-legacy so a clean NEW list can be confirmed "
+                       "before generating.")
+@click.argument("words", nargs=-1, type=str)
+@click.option("--file", "words_file", default=None,
+              type=click.Path(exists=True, dir_okay=False, path_type=str),
+              help="Read additional candidate words from a file, one per line "
+                   "(sidesteps shell quoting for a long mined list)")
+def db_check_batch(words, words_file):
+    candidates = list(words)
+    if words_file:
+        candidates += [ln.strip() for ln in
+                       Path(words_file).read_text(encoding="utf-8").splitlines()
+                       if ln.strip()]
+    if not candidates:
+        result = {"success": False, "message": "no candidate words given (pass words or --file)"}
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(1)
+    result = check_batch(candidates)
     print(json.dumps(result, ensure_ascii=False))
     sys.exit(0 if result.get("success", True) else 1)
 

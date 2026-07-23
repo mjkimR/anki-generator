@@ -110,6 +110,7 @@ DATA_ATTEMPTS_SUBDIR = "attempts"
 DATA_CONFUSIONS_SUBDIR = "confusions"
 DATA_CARD_FEEDBACK_SUBDIR = "card_feedback"
 DATA_KANJI_SUBDIR = "kanji_cards"
+DATA_SOURCES_SUBDIR = "sources"
 
 def get_data_cards_dir(data_dir=None) -> Path:
     return Path(data_dir or DATA_DIR) / DATA_CARDS_SUBDIR
@@ -159,6 +160,16 @@ def get_data_kanji_file(data_dir=None) -> Path:
     # One bounded file: the Jōyō set has a fixed ceiling (~2,136), unlike the ever-growing
     # cards table that partitions by day.
     return get_data_kanji_dir(data_dir) / "kanji_cards.jsonl"
+
+# Registered legacy sources (the `known_sources` meta entry: per-deck Anki query + field
+# mapping). Mirrored like every other table so it survives a DB rebuild and travels to
+# another machine — without it `legacy retire-promoted` silently matches zero notes.
+def get_data_sources_dir(data_dir=None) -> Path:
+    return Path(data_dir or DATA_DIR) / DATA_SOURCES_SUBDIR
+
+def get_data_sources_file(data_dir=None) -> Path:
+    # One line per registered source; a handful of rows, so a single bounded file.
+    return get_data_sources_dir(data_dir) / "known_sources.jsonl"
 
 # Card working files: one JSON per target word under pending/, archived to done/
 # after the pipeline persists them (the DB is the source of truth from then on).
