@@ -42,17 +42,35 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
                         "AZURE_SPEECH_KEY and AZURE_SPEECH_REGION must both be configured")
                 if core.tts_helper.core._load_azure_speech() is None:
                     raise RuntimeError("azure-cognitiveservices-speech is not installed")
-            elif core.tts_helper.core._load_edge_tts() is None:
+            voice = config.TTS_DEFAULT_VOICE
+            if provider == "aivis":
+                import urllib.request
+                aivis_url = config.resolve_aivis_api_url().rstrip("/")
+                try:
+                    with urllib.request.urlopen(f"{aivis_url}/version", timeout=3) as resp:
+                        resp.read()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"AivisSpeech engine is not reachable at {aivis_url} ({exc}); "
+                        "start the engine or fix AIVIS_API_URL") from exc
+                # Aivis selects a voice by numeric style id, so TTS_DEFAULT_VOICE (an Azure
+                # voice name) is ignored here. Report what actually speaks, or the check
+                # reads as if a configured voice were in use when it is not.
+                voice = f"style {config.AIVIS_SPEAKER_ID} @ {aivis_url}"
+            elif provider != "azure" and core.tts_helper.core._load_edge_tts() is None:
                 raise RuntimeError("edge-tts is not installed")
             add("tts_provider", True,
-                f"{provider}, voice={config.TTS_DEFAULT_VOICE}, automatic fallback disabled")
+                f"{provider}, voice={voice}, automatic fallback disabled")
         except Exception as e:
             add("tts_provider", False, str(e))
 
     try:
         with db_helper.connection(db_path) as conn:
-            total, pending = repository.database_summary(conn)
-        add("database", True, f"{total} cards, {pending} pending sync")
+            total, pending, deleted = repository.database_summary(conn)
+        detail = f"{total} cards, {pending} pending sync"
+        if deleted:
+            detail += f" (+{deleted} deleted, kept as tombstones)"
+        add("database", True, detail)
     except Exception as e:
         add("database", False, str(e))
 
@@ -204,7 +222,10 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
                 add("anki_notes", False,
                     f"{len(missing)} of {len(tracked)} synced cards reference notes not "
                     f"in this Anki collection — sync Anki (AnkiWeb) first; if they were "
-                    f"deleted in Anki on purpose, that deletion is not propagated back")
+                    f"deleted in Anki on purpose, that deletion is not propagated back; "
+                    f"a card deleted with delete-card and then revived by a newer edit "
+                    f"from another machine also lands here (ADR-0015) — delete it again "
+                    f"if the deletion was what you meant")
             else:
                 add("anki_notes", True, f"all {len(tracked)} tracked notes present in Anki")
     except Exception:

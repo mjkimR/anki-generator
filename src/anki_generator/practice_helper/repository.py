@@ -161,7 +161,7 @@ def root_ids_for_note_ids(conn, note_ids):
     for chunk in chunked(note_ids, SQL_VAR_CHUNK):
         placeholders = ",".join("?" for _ in chunk)
         rows.extend(conn.execute(
-            "SELECT root_id, anki_note_id FROM cards"
+            "SELECT root_id, anki_note_id FROM live_cards"
             f" WHERE anki_note_id IN ({placeholders})",
             chunk,
         ).fetchall())
@@ -169,12 +169,12 @@ def root_ids_for_note_ids(conn, note_ids):
 
 
 def distinct_card_root_ids(conn):
-    return [row[0] for row in conn.execute("SELECT DISTINCT root_id FROM cards")]
+    return [row[0] for row in conn.execute("SELECT DISTINCT root_id FROM live_cards")]
 
 
 def unpracticed_cards(conn, limit):
     return conn.execute(
-        "SELECT root_id, MAX(back_meaning) FROM cards"
+        "SELECT root_id, MAX(back_meaning) FROM live_cards"
         " WHERE root_id NOT IN (SELECT DISTINCT root_id FROM attempts)"
         " GROUP BY root_id ORDER BY MIN(created_at), root_id LIMIT ?",
         (limit,),

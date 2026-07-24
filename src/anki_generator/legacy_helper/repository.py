@@ -1,8 +1,8 @@
 """Legacy-migration repository queries over known words and their card matches."""
 
-_EXACT_CARD_MATCH = """EXISTS (SELECT 1 FROM cards c
+_EXACT_CARD_MATCH = """EXISTS (SELECT 1 FROM live_cards c
     WHERE {extra} (c.root_id = w.norm_key OR c.root_id LIKE w.norm_key || '(%'))"""
-_READING_CARD_MATCH = """(w.norm_key NOT LIKE '%(%' AND EXISTS (SELECT 1 FROM cards c
+_READING_CARD_MATCH = """(w.norm_key NOT LIKE '%(%' AND EXISTS (SELECT 1 FROM live_cards c
     WHERE {extra} c.root_id LIKE '%(' || w.norm_key || ')'))"""
 
 _SNAPSHOT_SQL = """
@@ -113,7 +113,7 @@ def reading_only_candidates(conn):
 
 def synced_cards_for_reading(conn, norm_key):
     return conn.execute(
-        "SELECT root_id, target_word, back_meaning FROM cards"
+        "SELECT root_id, target_word, back_meaning FROM live_cards"
         " WHERE synced_to_anki = 1 AND root_id LIKE '%(' || ? || ')'",
         (norm_key,),
     ).fetchall()

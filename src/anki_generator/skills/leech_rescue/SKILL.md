@@ -98,7 +98,10 @@ fix. Then return to Step 1 for the next card.
   Anki never silently diverge. Editing a card that has **no Anki note yet** is DB-only and rides
   the next push. `retire` likewise needs Anki. So run rescue with Anki open — an empty queue or
   a "needs Anki" refusal is never an error, just do it on the Anki machine.
-- **Deletion is out of scope.** Retire is the strongest action; true deletion awaits the
-  tombstone-based delete-sync design. A card taken out of rotation is suspended, not removed.
+- **Retire is the strongest action here.** A card taken out of rotation is suspended and
+  tagged, not removed — that is reversible and keeps the review history. Permanent deletion
+  exists (`anki-gen delete-card`, which removes the Anki note for good) but it is not a
+  rescue treatment: reach for it only when the user explicitly says the card should never
+  have existed, and never as the automatic next step after a failed rescue.
 - **Don't force a treatment.** If a card is fine and the user just needs to re-learn it,
   `capture … --action none` and move on — the record still has value.

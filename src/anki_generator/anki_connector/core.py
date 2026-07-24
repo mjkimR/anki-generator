@@ -363,7 +363,8 @@ def route_hyogai_cards(source_deck, hyogai_deck):
     return len(card_ids)
 
 # Archive semantics, single-sourced: suspend + tag — reversible, review history
-# preserved. Real deletion is deliberately not implemented (tombstone design pending).
+# preserved. This is the default way to take cards out of rotation; `delete_notes` below
+# is the irreversible counterpart, reserved for cards the user tombstoned on purpose.
 ARCHIVE_TAG = "ankigen-retired"
 
 def _chunked(seq, size=500):
@@ -390,6 +391,20 @@ def archive_notes(note_ids):
     if note_ids:
         invoke("addTags", notes=note_ids, tags=ARCHIVE_TAG)
     return len(cards)
+
+def delete_notes(note_ids):
+    """Permanently removes notes from the collection, review history included.
+
+    The irreversible half of the tombstone flow (ADR-0015): a card is only deleted here
+    after the user asked for it explicitly and the DB row was marked `deleted_at`. Notes
+    already gone — deleted by hand, or by another machine that drained the same tombstone —
+    are not an error: `deleteNotes` ignores unknown ids, which is what makes draining the
+    deletion queue idempotent. Returns the number of ids submitted."""
+    if not note_ids:
+        return 0
+    for chunk in _chunked(list(note_ids), 200):
+        invoke("deleteNotes", notes=list(chunk))
+    return len(note_ids)
 
 def push_to_anki(card_json_path, deck_name):
     if not os.path.exists(card_json_path):

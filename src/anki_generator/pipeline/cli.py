@@ -3,8 +3,11 @@ import click
 from anki_generator.config import ANKI_DEFAULT_DECK
 from anki_generator.common import emit, db_option
 from .run import cmd_run
-from .sync import cmd_sync_pending, cmd_sync_decks, cmd_backfill_audio
+from .sync import (
+    cmd_sync_pending, cmd_sync_decks, cmd_backfill_audio, cmd_delete_card
+)
 from .doctor import cmd_doctor
+from .reading_audit import cmd_check_readings
 from .gc import cmd_gc_media
 
 @click.command(name="run", help="Validate, synthesize, persist, and push a card file")
@@ -19,6 +22,31 @@ def run_cmd(file, deck, db):
 @db_option
 def sync_pending_cmd(deck, db):
     emit(*cmd_sync_pending(deck, db_path=db))
+
+@click.command(name="check-readings",
+               help="Audit every card's furigana against the reading Aivis would speak. "
+                    "Analysis only — no audio, no writes — so a whole deck takes minutes.")
+@click.option("--synthesize", is_flag=True,
+              help="Also run real synthesis on the failures to measure what the "
+                   "escalation ladder actually fixes (audio is discarded)")
+@click.option("--limit", type=int, default=None, help="Check only the oldest N cards")
+@db_option
+def check_readings_cmd(synthesize, limit, db):
+    emit(*cmd_check_readings(db_path=db, synthesize=synthesize, limit=limit))
+
+@click.command(name="delete-card",
+               help="Permanently delete a card: tombstone the row and remove the Anki "
+                    "note. Dry run unless --confirm is passed.")
+@click.argument("root_id", type=str)
+@click.option("--front", default=None,
+              help="Delete only this sense (exact front text); default is every sense "
+                   "under the root_id")
+@click.option("--reason", default=None, help="Why it was deleted (kept in the tombstone)")
+@click.option("--confirm", is_flag=True,
+              help="Apply the deletion. Without it the command only reports what would go.")
+@db_option
+def delete_card_cmd(root_id, front, reason, confirm, db):
+    emit(*cmd_delete_card(root_id, front=front, reason=reason, confirm=confirm, db_path=db))
 
 @click.command(name="sync-decks", help="Route Listening cards from the vocab deck into the listening deck")
 @click.option("--deck", default=ANKI_DEFAULT_DECK, help="Source deck the listening cards are swept out of")

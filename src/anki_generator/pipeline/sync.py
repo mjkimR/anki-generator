@@ -1,7 +1,8 @@
 from typing import cast
 
 from anki_generator.schemas import (
-    CmdSyncPendingResponse, CmdSyncDecksResponse, CmdBackfillResponse
+    CmdSyncPendingResponse, CmdSyncDecksResponse, CmdBackfillResponse,
+    CmdDeleteCardResponse
 )
 from anki_generator import (
     anki_connector, db_helper, tts_helper
@@ -13,13 +14,33 @@ from .core import (
     _route_hyogai, _tts_text, _tts_error, _anki_error
 )
 
+def _drain_deletions(deletions, db_path=None):
+    """Remove the Anki notes of cards tombstoned anywhere, then drop their note ids.
+
+    This is how a deletion made on a machine without Anki (or before the tombstone was
+    pulled) finally reaches the collection. `delete_notes` ignores unknown ids and the
+    id-clearing is keyed on the same rows, so re-running after a partial failure is safe."""
+    if not deletions:
+        return 0, None
+    note_ids = [d["anki_note_id"] for d in deletions if d.get("anki_note_id")]
+    try:
+        anki_connector.delete_notes(note_ids)
+    except Exception as e:
+        return 0, f"Tombstoned cards could not be deleted in Anki: {e}"
+    db_helper.clear_deleted_note_ids(note_ids, db_path=db_path)
+    return len(note_ids), None
+
+
 def cmd_sync_pending(deck_name, db_path=None) -> tuple[CmdSyncPendingResponse, int]:
     error = generation_only_error("This machine is generation-only (ANKI_ENABLED=0) — "
                                   "run sync-pending on an Anki-equipped machine instead.")
     if error:
         return error
     pending = db_helper.fetch_pending(db_path=db_path)
-    if not pending:
+    # Deletions drain here too: a tombstone pulled from another machine has no other way
+    # into this collection, and it must still be applied when nothing is pending to push.
+    deletions = db_helper.pending_deletions(db_path=db_path)
+    if not pending and not deletions:
         return {"status": "done", "synced_count": 0, "message": "No cards pending sync."}, 0
 
     anki_online, model_name, anki_error = connect_anki(deck_name)
@@ -45,6 +66,10 @@ def cmd_sync_pending(deck_name, db_path=None) -> tuple[CmdSyncPendingResponse, i
         except Exception as e:
             errors.append(_anki_error(card, e))
 
+    deleted_count, deletion_error = _drain_deletions(deletions, db_path=db_path)
+    if deletion_error:
+        errors.append({"error": deletion_error})
+
     routed_listening, routing_error = _route_listening(deck_name)
     routed_hyogai, hyogai_routing_error = _route_hyogai(deck_name)
     routing_error = routing_error or hyogai_routing_error
@@ -56,6 +81,8 @@ def cmd_sync_pending(deck_name, db_path=None) -> tuple[CmdSyncPendingResponse, i
         "remaining": len(errors),
         "backup": export_backup(db_path=db_path),
     }
+    if deleted_count:
+        result["deleted_count"] = deleted_count
     if routed_listening:
         result["routed_listening"] = routed_listening
     if routed_hyogai:
@@ -67,6 +94,49 @@ def cmd_sync_pending(deck_name, db_path=None) -> tuple[CmdSyncPendingResponse, i
         result["message"] = ("Some cards were not synced. TTS failures remain pending "
                              "and can be retried with 'anki-gen sync-pending'.")
     return cast(CmdSyncPendingResponse, result), (1 if errors else 0)
+
+def cmd_delete_card(root_id, front=None, reason=None, confirm=False,
+                    db_path=None) -> tuple[CmdDeleteCardResponse, int]:
+    """Delete a card for good: tombstone the row, then remove the note from Anki.
+
+    Deleting the note destroys its review history, so the default run is a dry run that
+    only reports what would go — nothing is written without `confirm`. This is the one
+    place that departs from the reversible-archive default (ADR-0005): retiring a card
+    suspends it, deleting one means the user wants it out of the collection entirely."""
+    targets = db_helper.live_cards_for(root_id, front=front, db_path=db_path)
+    if not targets:
+        scope = f"'{root_id}'" + (f" / front '{front}'" if front else "")
+        return {"status": "error",
+                "message": f"No live card matches {scope}. Pass the exact root_id as stored"
+                           " (use 'anki-gen db check <word>' to see it)."}, 1
+    if not confirm:
+        return {"status": "planned", "cards": targets, "tombstoned_count": 0,
+                "message": f"Dry run: {len(targets)} card(s) would be tombstoned and their"
+                           " Anki notes deleted (review history included). Re-run with"
+                           " --confirm to apply."}, 0
+
+    tombstoned = db_helper.tombstone_cards(root_id, front=front, reason=reason,
+                                           db_path=db_path)
+    result = {"status": "done", "cards": tombstoned,
+              "tombstoned_count": len(tombstoned)}
+    # The tombstone is the durable part and is already committed. Anki may be closed or
+    # absent (generation-only machine); the note then stays queued for the next
+    # sync-pending on an Anki-equipped machine rather than failing the deletion.
+    if config.ANKI_ENABLED:
+        deleted_count, deletion_error = _drain_deletions(tombstoned, db_path=db_path)
+        result["deleted_count"] = deleted_count
+        if deletion_error:
+            result["status"] = "queued"
+            result["message"] = (f"{deletion_error} The tombstone is recorded; run"
+                                 " 'anki-gen sync-pending' with Anki open to apply it.")
+    else:
+        result["status"] = "queued"
+        result["message"] = ("Generation-only machine (ANKI_ENABLED=0): the tombstone is"
+                             " recorded and will be applied by sync-pending on the Anki"
+                             " machine.")
+    result["backup"] = export_backup(db_path=db_path)
+    return cast(CmdDeleteCardResponse, result), 0
+
 
 def cmd_sync_decks(deck_name, db_path=None) -> tuple[CmdSyncDecksResponse, int]:
     error = generation_only_error("This machine is generation-only (ANKI_ENABLED=0) — "

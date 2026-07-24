@@ -110,6 +110,44 @@ def test_doctor_rejects_unconfigured_selected_azure_provider(tmp_path, monkeypat
     assert check["ok"] is False
     assert "AZURE_SPEECH_KEY" in check["detail"]
 
+def test_doctor_rejects_unreachable_aivis_engine(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "aivis")
+    fake_anki_offline(monkeypatch)
+    import urllib.request
+
+    def refuse(url, timeout=None):
+        raise OSError("connection refused")
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+
+    assert code == 1 and result["status"] == "error"
+    check = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert check["ok"] is False
+    assert "AIVIS_API_URL" in check["detail"]
+
+def test_doctor_accepts_reachable_aivis_engine(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "aivis")
+    fake_anki_offline(monkeypatch)
+    import urllib.request
+
+    class Resp:
+        def read(self):
+            return b'"1.1.0"'
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout=None: Resp())
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+
+    check = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert check["ok"] is True
+    assert "aivis" in check["detail"]
+
 def test_doctor_flags_attempts_mirror_drift(tmp_path, monkeypatch):
     patch_backup(monkeypatch, tmp_path)  # empty data dir — no attempts mirror
     fake_anki_offline(monkeypatch)

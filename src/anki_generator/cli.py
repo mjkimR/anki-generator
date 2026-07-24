@@ -1,6 +1,7 @@
 import click
 from anki_generator.pipeline import (
-    run_cmd, sync_pending_cmd, sync_decks_cmd, backfill_audio_cmd, doctor_cmd, gc_media_cmd
+    run_cmd, sync_pending_cmd, sync_decks_cmd, delete_card_cmd, check_readings_cmd,
+    backfill_audio_cmd, doctor_cmd, gc_media_cmd
 )
 from anki_generator.db_helper import db_group
 from anki_generator.legacy_helper import legacy_group
@@ -19,6 +20,8 @@ def main_cli():
 main_cli.add_command(run_cmd)
 main_cli.add_command(sync_pending_cmd)
 main_cli.add_command(sync_decks_cmd)
+main_cli.add_command(delete_card_cmd)
+main_cli.add_command(check_readings_cmd)
 main_cli.add_command(backfill_audio_cmd)
 main_cli.add_command(doctor_cmd)
 main_cli.add_command(gc_media_cmd)

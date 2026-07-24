@@ -16,7 +16,7 @@ from .sync import cmd_sync_pending, cmd_sync_decks, cmd_backfill_audio
 from .doctor import cmd_doctor
 from .gc import cmd_gc_media
 from .cli import (
-    run_cmd, sync_pending_cmd, sync_decks_cmd,
+    run_cmd, sync_pending_cmd, sync_decks_cmd, delete_card_cmd, check_readings_cmd,
     backfill_audio_cmd, doctor_cmd, gc_media_cmd
 )
 from anki_generator.config import ANKI_NOTE_MODEL
@@ -28,6 +28,7 @@ __all__ = [
     "cmd_run", "cmd_sync_pending", "cmd_sync_decks", "cmd_backfill_audio",
     "cmd_doctor", "cmd_gc_media", "tts_helper",
     "anki_connector", "run_cmd", "sync_pending_cmd", "sync_decks_cmd",
+    "delete_card_cmd", "check_readings_cmd",
     "backfill_audio_cmd", "doctor_cmd", "gc_media_cmd",
     "ANKI_NOTE_MODEL", "SKILLS_DIR", "MAX_ATTEMPTS", "core"
 ]

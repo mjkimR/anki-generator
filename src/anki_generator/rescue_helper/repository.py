@@ -20,7 +20,7 @@ _CARD_COLS = ", ".join(CARD_LOOKUP_COLUMNS)
 def card_by_root_id(conn, root_id):
     """Every sense (one row per `front`) carried by a root_id, ordered for stable output."""
     return conn.execute(
-        f"SELECT {_CARD_COLS} FROM cards WHERE root_id = ? ORDER BY front",
+        f"SELECT {_CARD_COLS} FROM live_cards WHERE root_id = ? ORDER BY front",
         (root_id,),
     ).fetchall()
 
@@ -33,7 +33,7 @@ def cards_by_note_ids(conn, note_ids):
     for chunk in chunked(note_ids, SQL_VAR_CHUNK):
         placeholders = ",".join("?" for _ in chunk)
         rows.extend(conn.execute(
-            f"SELECT {_CARD_COLS} FROM cards WHERE anki_note_id IN ({placeholders})",
+            f"SELECT {_CARD_COLS} FROM live_cards WHERE anki_note_id IN ({placeholders})",
             chunk,
         ).fetchall())
     return rows
