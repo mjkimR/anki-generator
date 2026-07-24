@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-import os
 import re
 import html
 
@@ -47,7 +46,8 @@ class BaseTTSProvider(ABC):
         }
 
     @staticmethod
-    def failure(message: str, metadata: dict = None, *, error_code: str, error_stage: str, retryable: bool, details: dict = None) -> dict:
+    def failure(message: str, metadata: dict | None = None, *, error_code: str,
+                error_stage: str, retryable: bool, details: dict | None = None) -> dict:
         result = {
             "success": False,
             "error": message,

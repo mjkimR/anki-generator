@@ -180,7 +180,9 @@ def test_aivis_synthesis_success(tmp_path, monkeypatch):
 
     def mock_urlopen(req, timeout=10):
         if "audio_query" in req.full_url:
-            return DummyResponse(b'{"kana": " test"}')
+            query = ('{"accent_phrases": [{"moras": [{"text": "ハ"}, {"text": "テ"},'
+                     ' {"text": "タ"}], "accent": 1}], "kana": ""}')
+            return DummyResponse(query.encode("utf-8"))
         return DummyResponse(b"fake_audio_bytes")
 
     import urllib.request
@@ -191,7 +193,7 @@ def test_aivis_synthesis_success(tmp_path, monkeypatch):
 
     assert result["success"] is True
     assert result["provider"] == "aivis"
-    assert result["render_version"] == "aivis-kana-v1"
+    assert result["render_version"] == "aivis-dict-v1"
     assert out.exists()
     assert out.read_bytes() == b"fake_audio_bytes"
 

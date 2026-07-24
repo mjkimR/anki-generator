@@ -46,7 +46,7 @@ class EdgeTTSProvider(BaseTTSProvider):
         try:
             kana_text = self.prepare_text(text, voice)
             communicate = edge_tts.Communicate(kana_text, voice)
-            await communicate.save(output_path)
+            await communicate.save(str(output_path))
             if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
                 self.remove_partial_output(output_path)
                 return self.failure(

@@ -140,7 +140,7 @@ class AzureTTSProvider(BaseTTSProvider):
             speech_config.speech_synthesis_voice_name = voice
             audio_config = speechsdk.audio.AudioConfig(filename=str(output_path))
             synthesizer = speechsdk.SpeechSynthesizer(
-                speech_config=speech_config, audio_config=audio_config)
+                speech_config=speech_config, audio_config=audio_config)  # type: ignore[arg-type]
 
             ssml = self.prepare_text(text, voice)
             synth = synthesizer
