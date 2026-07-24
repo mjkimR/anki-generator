@@ -66,10 +66,19 @@ See [skill drivers](architecture/skill-drivers.md),
   is a separate flag-free card throttled by `hyogai_priority`.
   See [ADR-0009](decisions/0009-kanji-root-identity-kana-surface.md).
 - Select one TTS provider explicitly and require valid audio before an Anki push.
-  See [ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md).
+  See [ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md). Aivis readings are
+  additionally verified against the card's bracket furigana before synthesis.
+  See [ADR-0013](decisions/0013-aivis-reading-verification.md).
 - Edit a card in place — DB row, JSONL mirror, and (best-effort) the live note via the one
-  shared `updateNoteFields` primitive — rather than re-queueing it; deletion stays out of
-  scope. See [ADR-0012](decisions/0012-in-place-card-edits.md).
+  shared `updateNoteFields` primitive — rather than re-queueing it.
+  See [ADR-0012](decisions/0012-in-place-card-edits.md).
+- Resolve card content across machines by a per-row content clock: the strictly newer
+  `updated_at` wins, ties keep the local row. This is the one place merging adopts rather
+  than preserves. See [ADR-0014](decisions/0014-card-content-clock.md).
+- Express deletion as a tombstone that rides the same clock, and read `live_cards` — never
+  the `cards` table — wherever "the cards that exist" is meant. Deleting removes the Anki
+  note for good and is opt-in; taking a card out of rotation is still a reversible archive.
+  See [ADR-0015](decisions/0015-deletion-tombstones.md).
 - Teach the isolated-kanji on/kun reading map in a separate repo-owned deck keyed by the
   kanji itself, where the official on-yomi count is the difficulty boundary and readings
   outside the 音訓表 are never counted.

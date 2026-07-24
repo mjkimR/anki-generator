@@ -19,6 +19,9 @@ ADRs preserve **why** a durable decision was made. Current behavior remains docu
 | [0010](0010-explicit-fail-closed-tts-provider.md) | Accepted | Select one TTS provider explicitly and fail closed |
 | [0011](0011-single-kanji-reading-acquisition.md) | Accepted | Single-kanji on/kun acquisition deck with a Korean-reading bridge |
 | [0012](0012-in-place-card-edits.md) | Accepted | Edit cards in place, pushing directly via updateNoteFields; deletion stays out of scope |
+| [0013](0013-aivis-reading-verification.md) | Accepted | Verify Aivis readings first, escalate to a temporary user dictionary, fail closed |
+| [0014](0014-card-content-clock.md) | Accepted | Resolve card content across machines by a per-row content clock |
+| [0015](0015-deletion-tombstones.md) | Accepted | Delete cards through tombstones that ride the content clock; real note deletion, opt-in |
 
 ## When to add an ADR
 

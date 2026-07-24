@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-23
+- Note: decision 4 below ("deletion stays out of scope") was the state at the time; deletion
+  shipped later as [ADR-0015](0015-deletion-tombstones.md). The rest stands.
 
 ## Context
 

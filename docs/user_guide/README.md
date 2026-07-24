@@ -21,7 +21,10 @@
    AZURE_SPEECH_REGION=<your-region>
    ```
    Set `TTS_PROVIDER=edge` or `TTS_PROVIDER=aivis` (AivisSpeech API; `AIVIS_API_URL`, `AIVIS_SPEAKER_ID`)
-   when desired. Provider failures do not fall back automatically.
+   when desired. Provider failures do not fall back automatically. With `aivis`, the doctor
+   also checks that the engine is reachable, and every synthesis verifies the engine's
+   reading against the card's furigana — a card whose reading cannot be corrected
+   automatically stays pending instead of receiving wrong audio.
 3. Verify with the doctor:
    ```bash
    uv run anki-gen doctor
@@ -174,6 +177,8 @@ alias akg='uv run anki-gen'
 | `akg backfill-audio` | Repair already-synced silent cards (pass `--force` to re-synthesize all existing audio) |
 | `akg sync-decks` | Re-run routing when Listening or Hyōgai cards linger in the vocab deck |
 | `akg gc-media` | Delete mp3s no card references (occasionally) |
+| `akg check-readings` | Audit every card's furigana against the reading Aivis would speak — analysis only, no audio. Run it before a bulk re-synthesis, after changing speaker or engine, or as a furigana spot-check (`--synthesize` also measures what the escalation ladder fixes) |
+| `akg delete-card "単語(よみ)"` | Permanently remove a card that should never have existed. Shows what would go; add `--confirm` to actually do it. Deletes the Anki note and its review history — to just take a card out of rotation, retire it instead |
 | `akg practice weak-words` | What to practice next — your weakest words (uses live Anki stats when open, offline blend otherwise) |
 | `akg practice stats` | Practice report: correct rate, struggling words (`--word "単語(よみ)"` for one word's history) |
 | `akg practice list-confusions` | Review the captured confusable-word groups (`--all` includes resolved ones) |

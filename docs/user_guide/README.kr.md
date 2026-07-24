@@ -13,7 +13,7 @@
    AZURE_SPEECH_KEY=<your-key>
    AZURE_SPEECH_REGION=<your-region>
    ```
-   Edge나 AivisSpeech를 사용할 경우 `TTS_PROVIDER=edge` 또는 `TTS_PROVIDER=aivis`(`AIVIS_API_URL`, `AIVIS_SPEAKER_ID` 설정)로 지정합니다. Provider 실패 시 다른 엔진으로 자동 전환되지 않습니다.
+   Edge나 AivisSpeech를 사용할 경우 `TTS_PROVIDER=edge` 또는 `TTS_PROVIDER=aivis`(`AIVIS_API_URL`, `AIVIS_SPEAKER_ID` 설정)로 지정합니다. Provider 실패 시 다른 엔진으로 자동 전환되지 않습니다. `aivis` 선택 시 doctor가 엔진 도달 가능 여부도 확인하며, 매 합성마다 엔진의 독음을 카드 후리가나와 대조 검증합니다 — 자동 교정에 실패한 카드는 잘못된 음성 대신 pending 상태로 남습니다.
 3. 환경 점검은 `doctor` 명령어로 수행:
    ```bash
    uv run anki-gen doctor
@@ -139,6 +139,8 @@ alias akg='uv run anki-gen'
 | `akg backfill-audio` | 이전 버전에서 동기화된 무음 카드의 음성 복구 (전체 카드 음성 재합성은 `--force`) |
 | `akg sync-decks` | 듣기(Listening)·표외한자(Hyōgai) 카드가 단어(Vocab) 덱에 남아 있는 경우, 올바른 덱으로 라우팅을 재실행 |
 | `akg gc-media` | 어떤 카드로도 참조되지 않고 유실된 미디어 파일(mp3)을 일괄 정리 (주기적으로 가끔 실행) |
+| `akg check-readings` | 모든 카드의 후리가나를 Aivis가 실제로 읽을 발음과 대조 — 분석만 하고 오디오는 안 만듦. 전체 재합성 전, 화자·엔진 변경 후, 또는 후리가나 점검용으로 실행 (`--synthesize`를 붙이면 escalation이 실제로 뭘 고치는지까지 측정) |
+| `akg delete-card "単語(よみ)"` | 애초에 만들지 말았어야 할 카드를 영구 삭제. 그냥 실행하면 무엇이 지워질지만 보여주고, `--confirm`을 붙여야 실제 삭제. Anki 노트와 복습 이력까지 사라지므로, 단순히 복습에서 빼려면 은퇴(retire)를 쓸 것 |
 | `akg practice weak-words` | 다음에 연습할 단어 — 가장 약한 단어 (Anki 실행 중이면 라이브 통계, 아니면 오프라인 블렌드) |
 | `akg practice stats` | 연습 리포트: 정답률·계속 틀리는 단어 (`--word "単語(よみ)"`로 단어별 이력) |
 | `akg practice list-confusions` | 캡처된 혼동 단어 그룹 조회 (`--all`이면 해소된 그룹 포함) |

@@ -52,7 +52,10 @@ a designed-for normal state everywhere in this codebase, never an error path.
     working-file shapes, `TARGET_MARKER_RE` the marker contract — stdlib+click+config
     imports only, every package imports it).
   - **Skill-specific drivers** that orchestrate the platform: `pipeline/` (the
-    deterministic card-generation driver, the only orchestrator), `legacy_helper/`
+    deterministic card-generation driver, and the only orchestrator — so anything that
+    spans the DB *and* Anki or TTS lives here too: `sync.py` also owns `delete-card`
+    ([ADR-0015](decisions/0015-deletion-tombstones.md)) and `reading_audit.py` is the
+    deck-wide `check-readings` audit), `legacy_helper/`
     (legacy-deck migration mechanics), `practice_helper/` (output-practice + confusion
     capture — the `attempts`/`confusions` schemas and mirrors are shared DB infrastructure,
     while practice-specific SQL lives in `practice_helper/repository.py`), and
@@ -105,7 +108,10 @@ an explicit user decision and a superseding ADR.
 - **TTS happens at push time, never at generation time** — audio is made on the machine
   that pushes. `TTS_PROVIDER` explicitly selects `azure` (default), `edge`, or `aivis`; provider
   failures never fall back or push a silent note. Azure renders whole annotated
-  pronunciation units as SSML substitutions; Edge and Aivis speak `reading_to_kana(back_reading)`.
+  pronunciation units as SSML substitutions; Edge speaks `reading_to_kana(back_reading)`;
+  Aivis speaks the plain kanji sentence, verified against the bracket furigana via
+  `audio_query` with temporary user-dictionary escalation, failing closed on any residual
+  mismatch ([ADR-0013](decisions/0013-aivis-reading-verification.md)).
   The cache key includes provider, renderer version, voice, and annotated input
   ([ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md)).
 - **`audio_path` stores a bare filename**, resolved against `media/` on read.
@@ -119,10 +125,17 @@ an explicit user decision and a superseding ADR.
   generation agent in an unwinnable retry loop.
 - **Retry cap lives in the sidecar** `cards/pending/.attempts.json`, outside the working
   file, so file rewrites cannot reset it.
-- **Archive semantics everywhere**: suspend + tag `ankigen-retired` — reversible, review
-  history preserved; the primitive is `anki_connector.archive_notes()`, single-sourced.
-  Deletion is deliberately not implemented (real deletion awaits a tombstone-based
-  delete-sync design; [ADR-0005](decisions/0005-reversible-archive.md)).
+- **Archive semantics by default**: suspend + tag `ankigen-retired` — reversible, review
+  history preserved; the primitive is `anki_connector.archive_notes()`, single-sourced
+  ([ADR-0005](decisions/0005-reversible-archive.md)). Real deletion exists but is the
+  deliberate exception: `anki-gen delete-card` tombstones the row and removes the Anki note
+  via `delete_notes()`, dry-run unless `--confirm`
+  ([ADR-0015](decisions/0015-deletion-tombstones.md)). Taking a card out of *rotation* is
+  still retire, not delete.
+- **"The cards that exist" means `live_cards`**, the view that hides tombstoned rows. Only
+  the mirror, `db_helper/rewrite.py`, and the DB↔JSONL parity counter read the `cards`
+  table directly; `tests/db_helper/test_live_cards_guard.py` fails on any new `FROM cards`
+  outside that allowlist.
 - **Script I/O contract**: stdout carries only the final JSON result (the agent's
   interface); diagnostics go to stderr.
 - **Nothing about the user's collection is hardcoded** in `legacy_helper/` — sources

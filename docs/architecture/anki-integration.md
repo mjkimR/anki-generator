@@ -79,8 +79,16 @@ nodes in natural Japanese context so genuine topic particles are still read corr
 half-width spaces between bunsetsu are **preserved** in SSML content: they mark word boundaries so
 that a plain-hiragana segment beginning with `は` is not fused onto the preceding token and misread
 as topic particle `わ (wa)`. This correctness depends on the validator's spacing convention —
-particles hug the preceding word and a space precedes each new bunsetsu. Edge and Aivis receive the validated
+particles hug the preceding word and a space precedes each new bunsetsu. Edge receives the validated
 kana produced by `reading_to_kana(back_reading)`.
+
+Aivis receives the natural kanji sentence with spaces stripped (the engine reads them as phrase
+breaks) and is verified rather than pre-corrected: the provider diffs the `audio_query`
+accent-phrase moras against the gold reading built from the bracket furigana
+(`tts_helper/reading_check.py`), escalates a mismatched bracket word through temporary
+user-dictionary entries, re-verifies the whole sentence, and fails closed
+(`aivis_reading_mismatch`) instead of synthesizing a wrong reading
+([ADR-0013](../decisions/0013-aivis-reading-verification.md)).
 
 `anki-gen backfill-audio --force` enables bulk re-synthesis of already-synced notes when renderer
 logic or pronunciation rules are updated.

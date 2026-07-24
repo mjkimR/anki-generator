@@ -25,6 +25,24 @@ Cards use `UNIQUE(root_id, front)`: one row per generated sense and sentence. Re
 the same card upserts content while preserving its original `created_at` unless an explicit
 timestamp is supplied. `anki_note_id` is a downstream handle, not the card's identity.
 
+`updated_at` is the card's **content clock**: the create path stamps it, an in-place edit
+bumps it when it changes a content column, and it travels in the mirror. Reconcile uses it
+to resolve card text across machines — the strictly newer stamp wins, ties keep the local
+row, and an unstamped row compares as its `created_at`
+([ADR-0014](../decisions/0014-card-content-clock.md)). Audio and TTS provenance are outside
+the clock, so re-synthesis never outranks a real edit.
+
+`deleted_at` is a **tombstone**: a deleted card keeps its row so the intent can travel in
+the mirror, because a bare deletion is undone by the next reconcile. Existence rides the
+same clock as content, so a later edit resurrects a tombstoned card and a later deletion
+beats an older copy ([ADR-0015](../decisions/0015-deletion-tombstones.md)). Every query
+meaning "the cards that exist" reads the **`live_cards`** view; only the mirror, the
+identity-rewrite path, and the DB↔JSONL parity counter read the table itself, and a test
+enforces that split. A tombstone that still carries an `anki_note_id` is the deletion
+queue — `anki-gen sync-pending` removes those notes, so a machine without Anki can record a
+deletion the Anki machine applies later. `anki-gen delete-card` is the entry point and is a
+dry run unless `--confirm` is passed.
+
 `audio_path` stores a bare filename so database and JSONL records survive checkout moves.
 `synced_to_anki` is the sync queue; there is no separate queue file.
 
@@ -75,6 +93,10 @@ Reconciliation follows these rules:
 - Sync state only moves from pending to synced.
 - Retirement and resolution timestamps fill missing values but do not revert.
 - Derived fields are recomputed locally instead of copied as authority.
+- Card content and existence are the one exception to "never adopt": they converge by the
+  content clock above, so an edit or deletion made on another machine is adopted instead of
+  being overwritten on the next export ([ADR-0014](../decisions/0014-card-content-clock.md),
+  [ADR-0015](../decisions/0015-deletion-tombstones.md)).
 
 Exports reconcile first and then deterministically mirror the complete database state. This
 **merge-then-mirror** ordering prevents a stale local database from rewriting git-held data

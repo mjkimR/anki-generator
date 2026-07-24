@@ -59,25 +59,17 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 - **Dependencies:** [ADR-0011](decisions/0011-single-kanji-reading-acquisition.md). Not on the
   critical path — run when time permits.
 
-### Card update and delete synchronization
-
-- **Outcome:** update an existing Anki note when card content changes and propagate intentional
-  deletion safely.
-- **Shipped slice:** in-place field edits already push directly via the shared
-  `updateNoteFields` primitive ([ADR-0012](decisions/0012-in-place-card-edits.md)) — used by
-  leech rescue's `edit` treatment. What remains is the *automatic* half.
-- **Exit criteria:** define stable edit identity, content-change *detection* (so an edited card
-  re-pushes without a manual command), orphan handling, and cross-machine tombstones as one
-  design.
-- **Constraint:** a local row deletion alone must never be treated as durable intent. See
-  [ADR-0004](decisions/0004-identity-by-data-semantics.md) and
-  [ADR-0005](decisions/0005-reversible-archive.md).
-
 ### Per-word reading cross-validation
 
 - **Outcome:** validate each bracketed kanji-reading pair, not only the card root.
+- **Why it matters more now:** the Aivis pipeline treats the bracket furigana as ground truth
+  ([ADR-0013](decisions/0013-aivis-reading-verification.md)) — a wrong bracket reading is not
+  just a display defect, it makes the engine's correct pronunciation look like a mismatch and
+  gets that wrong reading forced into the audio through user-dictionary escalation. Today only
+  the card root is cross-checked, and only when Janome knows the word.
 - **Exit criteria:** useful diagnostics without turning Janome vocabulary gaps into hard retry
-  failures; the check remains warning-level.
+  failures; the check remains warning-level. `reading_check.build_gold_reading` already splits
+  a sentence into per-word spans, so the decomposition exists.
 
 ### Weekly study report
 
