@@ -7,9 +7,11 @@ from typing import Any
 from pathlib import Path
 
 from anki_generator import config
+from anki_generator.common import chunked, SQL_VAR_CHUNK
 from .session import connection, transaction
 from .schema import (
-    SCHEMA, CARD_COLUMNS, REQUIRED_CARD_FIELDS,
+    SCHEMA, LIVE_CARDS_VIEW, CARD_COLUMNS, CARD_CONTENT_COLUMNS,
+    CARD_TOMBSTONE_COLUMNS, REQUIRED_CARD_FIELDS,
     KNOWN_SCHEMA, KNOWN_MIRROR_COLUMNS,
     ATTEMPTS_SCHEMA, ATTEMPTS_MIRROR_COLUMNS,
     CONFUSIONS_SCHEMA, CONFUSIONS_MIRROR_COLUMNS,
@@ -83,9 +85,9 @@ def _ensure_append_only_uuid(conn):
         cursor.execute(f"DROP TABLE {table}_old")
 
 def _ensure_confusions_resolved_at(conn):
-    """Additive migration: the resolution tombstone (deletion is deliberately not
-    implemented anywhere — archive semantics — so closing a confusion group is a
-    write-once resolved_at, monotonic across machines via the reconcile COALESCE)."""
+    """Additive migration: the resolution tombstone. Closing a confusion group is a
+    write-once resolved_at, monotonic across machines via the reconcile COALESCE — unlike
+    a card, a group is never deleted, only resolved."""
     cursor = conn.cursor()
     columns = {row[1] for row in cursor.execute("PRAGMA table_info(confusions)")}
     if columns and "resolved_at" not in columns:
@@ -135,6 +137,31 @@ def _ensure_tts_columns(conn):
         if name not in columns:
             conn.execute(f"ALTER TABLE cards ADD COLUMN {name} TEXT")
 
+def _ensure_cards_tombstone(conn):
+    """Add the tombstone columns and (re)create the live-cards view.
+
+    The view is dropped and recreated unconditionally: it is `SELECT *`, so a stale
+    definition left over from an older column set would silently serve the wrong shape."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
+    if "deleted_at" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN deleted_at TIMESTAMP")
+    if "deleted_reason" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN deleted_reason TEXT")
+    conn.execute("DROP VIEW IF EXISTS live_cards")
+    conn.execute(LIVE_CARDS_VIEW)
+
+def _ensure_cards_updated_at(conn):
+    """Add and backfill the content clock that makes cross-machine edits converge.
+
+    A pre-clock row is stamped with its `created_at`: it is the oldest defensible
+    version stamp, so a genuine edit made elsewhere (whose stamp is the edit time)
+    always wins, while two machines holding the same untouched row compare equal and
+    neither overwrites the other."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
+    if "updated_at" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN updated_at TIMESTAMP")
+    conn.execute("UPDATE cards SET updated_at = created_at WHERE updated_at IS NULL")
+
 def split_legacy_back(back):
     def trim(s):
         s = re.sub(r"^(?:\s|<br\s*/?>)+", "", s, flags=re.IGNORECASE)
@@ -169,6 +196,7 @@ def ensure_schema(conn):
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cards'")
     if not cursor.fetchone():
         cursor.execute(SCHEMA)
+        _ensure_cards_tombstone(conn)
         return
 
     columns = {row[1] for row in cursor.execute("PRAGMA table_info(cards)")}
@@ -178,6 +206,8 @@ def ensure_schema(conn):
         if "hyogai_priority" not in columns:
             cursor.execute("ALTER TABLE cards ADD COLUMN hyogai_priority TEXT DEFAULT ''")
         _ensure_tts_columns(conn)
+        _ensure_cards_updated_at(conn)
+        _ensure_cards_tombstone(conn)
         return
 
     legacy_cols = [row[1] for row in cursor.execute("PRAGMA table_info(cards)")]
@@ -199,6 +229,8 @@ def ensure_schema(conn):
             record,
         )
     cursor.execute("DROP TABLE cards_legacy")
+    _ensure_cards_updated_at(conn)
+    _ensure_cards_tombstone(conn)
 
 def _mirror_files(data_dir):
     files = list(config.get_data_cards_dir(data_dir).glob("cards-*.jsonl"))
@@ -258,7 +290,7 @@ def _check_word(conn, word):
     cursor = conn.cursor()
     escaped = word.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
     cursor.execute(
-        r"SELECT root_id, front, back_reading, back_meaning FROM cards"
+        r"SELECT root_id, front, back_reading, back_meaning FROM live_cards"
         r" WHERE root_id = ? OR root_id LIKE ? ESCAPE '\' ORDER BY id",
         (word, f"{escaped}(%"),
     )
@@ -288,7 +320,7 @@ def _check_word(conn, word):
     reading_rows = []
     for rk in sorted(reading_keys):
         for r in cursor.execute(
-                "SELECT root_id, front, back_reading, back_meaning FROM cards"
+                "SELECT root_id, front, back_reading, back_meaning FROM live_cards"
                 " WHERE root_id LIKE '%(' || ? || ')' ORDER BY id", (rk,)):
             if (r[0], r[1]) not in seen_cards:
                 seen_cards.add((r[0], r[1]))
@@ -412,7 +444,7 @@ def find_reading_equivalent_roots(cards, db_path=None):
             if not reading:
                 continue
             rows = conn.execute(
-                "SELECT DISTINCT root_id FROM cards"
+                "SELECT DISTINCT root_id FROM live_cards"
                 " WHERE root_id != ? AND root_id LIKE '%(' || ? || ')'",
                 (root, reading)).fetchall()
             matches = [r[0] for r in rows if _is_kana_root(r[0]) or _is_kana_root(root)]
@@ -434,7 +466,7 @@ def count_other_senses(cards, db_path=None):
             not_in = (f" AND front NOT IN ({', '.join('?' for _ in fronts)})"
                       if fronts else "")
             n = conn.execute(
-                f"SELECT COUNT(*) FROM cards WHERE root_id = ?{not_in}",
+                f"SELECT COUNT(*) FROM live_cards WHERE root_id = ?{not_in}",
                 [root_id, *fronts]).fetchone()[0]
             if n:
                 out[root_id] = n
@@ -468,6 +500,72 @@ def set_audio_metadata(root_id, front, audio_path, provider=None, voice=None,
         updated = cursor.rowcount > 0
     return updated
 
+def live_cards_for(root_id, front=None, db_path=None):
+    """The not-yet-deleted rows a delete/edit request would hit, for confirmation output."""
+    where = "root_id = ?" + ("" if front is None else " AND front = ?")
+    params = [root_id] if front is None else [root_id, front]
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT root_id, front, back_meaning, anki_note_id FROM live_cards"
+            f" WHERE {where} ORDER BY front", params).fetchall()
+    return [{"root_id": r[0], "front": r[1], "back_meaning": r[2], "anki_note_id": r[3]}
+            for r in rows]
+
+
+def tombstone_cards(root_id, front=None, reason=None, db_path=None):
+    """Mark a card deleted. Returns the rows tombstoned, each with its Anki note id.
+
+    The row is kept, not removed: a bare DELETE is undone by the next reconcile
+    (ADR-0002), so "gone" has to
+    be a state the mirror can carry. `updated_at` is bumped with it, because existence is
+    resolved by the same clock as content — this is what makes the deletion win against
+    the pre-deletion copy another machine still holds.
+
+    Without `front` every sense under the root is tombstoned; with it, just that one."""
+    where = "root_id = ?" + ("" if front is None else " AND front = ?")
+    params = [root_id] if front is None else [root_id, front]
+    with transaction(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT root_id, front, anki_note_id FROM live_cards WHERE {where}",
+            params).fetchall()
+        if rows:
+            conn.execute(
+                f"UPDATE cards SET deleted_at = CURRENT_TIMESTAMP, deleted_reason = ?,"
+                f" updated_at = CURRENT_TIMESTAMP WHERE {where} AND deleted_at IS NULL",
+                [reason, *params])
+    return [{"root_id": r[0], "front": r[1], "anki_note_id": r[2]} for r in rows]
+
+
+def pending_deletions(db_path=None):
+    """Tombstoned cards whose Anki note still needs removing — the deletion queue.
+
+    It needs no column of its own: a tombstone that still carries an `anki_note_id` is
+    exactly a deletion that has not reached Anki yet. Draining clears the id, so the row
+    leaves the queue and a machine that never had Anki open can still record the intent."""
+    with connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT root_id, front, anki_note_id FROM cards"
+            " WHERE deleted_at IS NOT NULL AND anki_note_id IS NOT NULL"
+            " ORDER BY deleted_at, root_id, front").fetchall()
+    return [{"root_id": r[0], "front": r[1], "anki_note_id": r[2]} for r in rows]
+
+
+def clear_deleted_note_ids(note_ids, db_path=None):
+    """Drop the Anki handle from tombstoned rows whose notes are now gone. Deliberately
+    does NOT touch `updated_at`: draining a queue is not a new version of the card."""
+    if not note_ids:
+        return 0
+    with transaction(db_path) as conn:
+        total = 0
+        for chunk in chunked(list(note_ids), SQL_VAR_CHUNK):
+            placeholders = ", ".join("?" for _ in chunk)
+            cursor = conn.execute(
+                f"UPDATE cards SET anki_note_id = NULL WHERE deleted_at IS NOT NULL"
+                f" AND anki_note_id IN ({placeholders})", list(chunk))
+            total += cursor.rowcount
+    return total
+
+
 def _row_to_card(row, columns):
     card = dict(zip(columns, row))
     for json_field in ("components", "collocations", "tags"):
@@ -492,7 +590,7 @@ def fetch_pending(db_path=None):
     columns = list(CARD_COLUMNS)
     with connection(db_path) as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(columns)} FROM cards WHERE synced_to_anki = 0 ORDER BY id"
+            f"SELECT {', '.join(columns)} FROM live_cards WHERE synced_to_anki = 0 ORDER BY id"
         ).fetchall()
     cards = [_row_to_card(row, columns) for row in rows]
     for card in cards:
@@ -506,7 +604,7 @@ def fetch_missing_audio(db_path=None, force: bool = False):
     where = "" if force else " WHERE audio_path IS NULL OR audio_path = ''"
     with connection(db_path) as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(columns)} FROM cards{where} ORDER BY id"
+            f"SELECT {', '.join(columns)} FROM live_cards{where} ORDER BY id"
         ).fetchall()
     return [_row_to_card(row, columns) for row in rows]
 
@@ -548,7 +646,7 @@ def refresh_card_lemmas(conn):
     cursor = conn.cursor()
     cursor.execute(CARD_LEMMAS_SCHEMA)
     cached = dict(cursor.execute("SELECT DISTINCT card_id, src_hash FROM card_lemmas"))
-    rows = cursor.execute("SELECT id, back_reading FROM cards").fetchall()
+    rows = cursor.execute("SELECT id, back_reading FROM live_cards").fetchall()
     stale = [(cid, br) for cid, br in rows if cached.get(cid) != _lemma_src_hash(br)]
     orphans = set(cached) - {cid for cid, _ in rows}
 
@@ -568,10 +666,25 @@ def refresh_card_lemmas(conn):
 
 # --- Backup reconciliation and JSONL mirror sync helpers ---
 
+# A mirror row supersedes the local one only when its content clock is strictly newer.
+# Ties and clock-less rows (a mirror written before this column existed) keep the local
+# value, so reconcile stays a no-op for untouched rows and never silently reverts a local
+# edit that the mirror has not seen yet.
+_MIRROR_CONTENT_NEWER = (
+    "COALESCE(excluded.updated_at, '') > COALESCE(cards.updated_at, '')"
+)
+
 _RECONCILE_SQL = f"""
-    INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
-    VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
+    INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at, updated_at,
+                       {', '.join(CARD_TOMBSTONE_COLUMNS)})
+    VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP),
+            COALESCE(?, CURRENT_TIMESTAMP), {', '.join('?' for _ in CARD_TOMBSTONE_COLUMNS)})
     ON CONFLICT(root_id, front) DO UPDATE SET
+        {', '.join(
+            f"{c} = CASE WHEN {_MIRROR_CONTENT_NEWER} THEN excluded.{c} ELSE cards.{c} END"
+            for c in CARD_CONTENT_COLUMNS + CARD_TOMBSTONE_COLUMNS)},
+        updated_at = CASE WHEN {_MIRROR_CONTENT_NEWER}
+                          THEN excluded.updated_at ELSE cards.updated_at END,
         synced_to_anki = MAX(COALESCE(cards.synced_to_anki, 0),
                              COALESCE(excluded.synced_to_anki, 0)),
         anki_note_id = COALESCE(cards.anki_note_id, excluded.anki_note_id),
@@ -645,6 +758,12 @@ def _reconcile_cards(conn, cards):
                 card.get("anki_note_id"),
                 card.get("synced_to_anki", 0),
                 card.get("created_at"),
+                # A partition written before the content clock existed has no stamp; fall
+                # back to created_at so it compares as the original version, not as "now"
+                # (which would let a stale mirror overwrite a fresh local edit).
+                card.get("updated_at") or card.get("created_at"),
+                card.get("deleted_at"),
+                card.get("deleted_reason"),
             ),
         )
         merged += 1

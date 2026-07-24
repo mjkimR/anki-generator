@@ -15,6 +15,7 @@ from .core import (
     _read_attempts, _read_confusions, _read_card_feedback,
     _reconcile_kanji_cards, _read_kanji_cards)
 
+from .schema import CARD_TIMESTAMP_COLUMNS
 from .insert import insert_card_records  # noqa: E402
 from .session import transaction
 
@@ -34,6 +35,12 @@ def _write_mirror_dir(directory, glob_pattern, partitions, written, unchanged, r
         if stale.name not in partitions:
             stale.unlink()
             removed.append(stale.name)
+
+def _card_mirror_record(row, columns):
+    """A cards row → mirror dict. Drops None so a live card does not carry empty tombstone
+    keys — only a genuinely deleted row shows `deleted_at`, and the diff stays readable."""
+    return {k: v for k, v in _row_to_card(row, columns).items() if v is not None}
+
 
 def _mirror_records(rows, columns):
     """Rows → mirror dicts, dropping None values (minimal, diff-stable JSONL) exactly as
@@ -97,14 +104,16 @@ def _export_cards(conn, data_dir):
     _reconcile_card_feedback(conn, _read_card_feedback(data_dir))
     _reconcile_kanji_cards(conn, _read_kanji_cards(data_dir))
     _reconcile_sources(conn, _read_sources(data_dir))
-    columns = list(CARD_COLUMNS) + ["created_at"]
+    # Reads the TABLE, not `live_cards`: a tombstone is exactly what has to reach the other
+    # machines, so deleted rows belong in the mirror.
+    columns = list(CARD_COLUMNS) + list(CARD_TIMESTAMP_COLUMNS)
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front"
     ).fetchall()
 
     card_partitions = {}
     for row in rows:
-        card = _row_to_card(row, columns)
+        card = _card_mirror_record(row, columns)
         day = (card.get("created_at") or "")[:10] or "unknown"
         card_partitions.setdefault(f"cards-{day}.jsonl", []).append(card)
 

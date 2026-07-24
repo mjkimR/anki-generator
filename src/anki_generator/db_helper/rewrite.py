@@ -25,11 +25,11 @@ from pathlib import Path
 
 from anki_generator import config
 from .core import (
-    ensure_schema, _set_meta, _row_to_card, _partitions_fingerprint,
+    ensure_schema, _set_meta, _partitions_fingerprint,
     _read_partition_cards,
 )
-from .mirror import _write_mirror_dir
-from .schema import CARD_COLUMNS
+from .mirror import _write_mirror_dir, _card_mirror_record
+from .schema import CARD_COLUMNS, CARD_CONTENT_COLUMNS, CARD_TIMESTAMP_COLUMNS
 
 
 def _fold_note_ids_and_audio(cursor, data_dir):
@@ -93,6 +93,11 @@ def _apply_edit(cursor, edit):
         return "merged"
 
     assignments = ", ".join(f"{col} = ?" for col in changes)
+    # Stamp the content clock only when the edit actually changed content: an
+    # audio/provenance-only rewrite leaves the text alone, and bumping it there would let
+    # this row win a reconcile against a machine holding a genuinely newer edit.
+    if set(changes) & set(CARD_CONTENT_COLUMNS):
+        assignments += ", updated_at = CURRENT_TIMESTAMP"
     cursor.execute(f"UPDATE cards SET {assignments} WHERE id = ?",
                    (*changes.values(), row_id))
     return "updated"
@@ -101,12 +106,12 @@ def _apply_edit(cursor, edit):
 def _rewrite_card_partitions(conn, data_dir):
     """The mirror half of export_cards for the cards table only — written from the DB
     state alone, deliberately without the reconcile step."""
-    columns = list(CARD_COLUMNS) + ["created_at"]
+    columns = list(CARD_COLUMNS) + list(CARD_TIMESTAMP_COLUMNS)
     rows = conn.execute(
         f"SELECT {', '.join(columns)} FROM cards ORDER BY root_id, front").fetchall()
     partitions = {}
     for row in rows:
-        card = _row_to_card(row, columns)
+        card = _card_mirror_record(row, columns)
         day = (card.get("created_at") or "")[:10] or "unknown"
         partitions.setdefault(f"cards-{day}.jsonl", []).append(card)
     written, unchanged, removed = [], [], []

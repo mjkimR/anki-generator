@@ -6,12 +6,29 @@ from anki_generator.common import coerce_cards
 from .core import CARD_COLUMNS, REQUIRED_CARD_FIELDS
 from .session import transaction
 
+# This is the create path, so it writes content unconditionally and stamps the content
+# clock with it — an insert that overwrites an existing row IS the newest version by
+# definition. A record that carries its own updated_at (a mirror row being imported)
+# keeps it, so importing a partition never inflates another machine's stamp to "now".
+#
+# The tombstone columns are carried from the record rather than left alone, which resolves
+# both directions of ADR-0015 with one rule:
+#   * a freshly generated card has no `deleted_at`, so re-creating a card that was deleted
+#     revives it — the create is the newer intent, and the row would otherwise stay
+#     invisible with no sign of why;
+#   * a mirror row being imported carries its own, so rebuilding the database from the
+#     mirror preserves deletions instead of resurrecting every one of them.
 _UPSERT_SQL = f"""
-    INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at)
-    VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP))
+    INSERT INTO cards ({', '.join(CARD_COLUMNS)}, created_at, updated_at,
+                       deleted_at, deleted_reason)
+    VALUES ({', '.join('?' for _ in CARD_COLUMNS)}, COALESCE(?, CURRENT_TIMESTAMP),
+            COALESCE(?, CURRENT_TIMESTAMP), ?, ?)
     ON CONFLICT(root_id, front) DO UPDATE SET
         {', '.join(f'{c} = excluded.{c}' for c in CARD_COLUMNS if c not in ('root_id', 'front'))},
-        created_at = CASE WHEN ? IS NULL THEN cards.created_at ELSE excluded.created_at END
+        created_at = CASE WHEN ? IS NULL THEN cards.created_at ELSE excluded.created_at END,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at,
+        deleted_reason = excluded.deleted_reason
 """
 
 def _insert_cards(conn, cards):
@@ -48,6 +65,9 @@ def _insert_cards(conn, cards):
                 card.get("anki_note_id"),
                 card.get("synced_to_anki", 0),
                 created_at,
+                card.get("updated_at"),
+                card.get("deleted_at"),
+                card.get("deleted_reason"),
                 created_at,
             ),
         )

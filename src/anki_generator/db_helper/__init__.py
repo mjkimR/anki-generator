@@ -3,6 +3,7 @@ from .core import (
     init_db, check_word, check_batch, count_other_senses, find_reading_equivalent_roots,
     mark_synced, set_audio_path, set_audio_metadata,
     fetch_pending, fetch_missing_audio, extract_card_lemmas, refresh_card_lemmas,
+    tombstone_cards, pending_deletions, clear_deleted_note_ids, live_cards_for,
     get_meta, set_meta, KANJI_RE, SCHEMA
 )
 from .insert import insert_cards, insert_card_records
@@ -22,6 +23,8 @@ __all__ = [
     "find_reading_equivalent_roots",
     "mark_synced", "set_audio_path", "set_audio_metadata", "fetch_pending",
     "fetch_missing_audio", "extract_card_lemmas", "refresh_card_lemmas",
+    "tombstone_cards", "pending_deletions", "clear_deleted_note_ids",
+    "live_cards_for",
     "insert_cards", "insert_card_records", "rewrite_cards",
     "export_cards", "export_practice_data", "import_cards_data",
     "count_export_lines", "count_known_lines",

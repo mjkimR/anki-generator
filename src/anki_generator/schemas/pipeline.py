@@ -63,6 +63,26 @@ class CmdSyncPendingResponse(TypedDict, total=False):
     routed_listening: int
     routed_hyogai: int
     routing_warning: str
+    deleted_count: int
+
+class CmdCheckReadingsResponse(TypedDict, total=False):
+    status: Literal["done", "error"]
+    message: str
+    checked: int
+    passed: int
+    mismatched: int
+    unfixable: int
+    cards: list[dict[str, Any]]
+    speaker: str
+    escalation: dict[str, Any]
+
+class CmdDeleteCardResponse(TypedDict, total=False):
+    status: Literal["done", "planned", "queued", "error"]
+    message: str
+    cards: list[dict[str, Any]]
+    tombstoned_count: int
+    deleted_count: int
+    backup: BackupResult
 
 class CmdSyncDecksResponse(TypedDict, total=False):
     status: Literal["done", "error"]
