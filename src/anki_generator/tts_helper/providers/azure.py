@@ -4,11 +4,9 @@ import html
 import asyncio
 from pathlib import Path
 
-from .base import BaseTTSProvider
+from anki_generator.common import FURIGANA_RE
 
-_ANNOTATED_KANJI_RE = re.compile(
-    r'([\u4e00-\u9fff\u3400-\u4dbf\uF900-\uFAFF]+)\[([^\]]+)\]'
-)
+from .base import BaseTTSProvider
 
 _RETRYABLE_AZURE_CODES = {
     "TooManyRequests",
@@ -30,7 +28,9 @@ def _annotated_unit_to_ssml(unit):
         reading = m.group(2)
         alias = _hira_to_kata(reading)
         return f'<sub alias="{alias}">{surface}</sub>'
-    return _ANNOTATED_KANJI_RE.sub(replace_kanji, unit)
+    # FURIGANA_RE, not a local copy: this one used to leave 々 out of the kanji run, so
+    # 悠々[ゆうゆう] never became a <sub> alias and the brackets went to Azure verbatim.
+    return FURIGANA_RE.sub(replace_kanji, unit)
 
 
 def _load_azure_speech():

@@ -17,6 +17,16 @@ from anki_generator import config
 # span at push time (anki_connector/core.py). One regex so the two sides cannot drift.
 TARGET_MARKER_RE = re.compile(r"\*([^*\n]+)\*")
 
+# Bracket furigana (決断[けつだん]) is read by four sides: the validator checks the
+# annotation is well-formed and cross-checks each reading against Janome
+# (validator/core.py), the Aivis check builds its gold pronunciation from it
+# (tts_helper/reading_check.py), and the Azure provider turns every pair into an SSML
+# `<sub>` alias (tts_helper/providers/azure.py). They each carried their own copy of this
+# pattern and the copies had already drifted over 々: a side that leaves it out of the
+# kanji run does not see 悠々[ゆうゆう] as one annotated word at all.
+KANJI_RUN_RE = re.compile(r'[々㐀-䶿一-鿿豈-﫿]+')
+FURIGANA_RE = re.compile(r'(' + KANJI_RUN_RE.pattern + r')\[([^\]]+)\]')
+
 # The hidden DB-path override every DB-touching command carries (tests point it at
 # a temp DB; it is not part of the user-facing surface).
 db_option = click.option("--db", default=None, hidden=True, help="Override DB path")

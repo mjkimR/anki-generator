@@ -29,14 +29,13 @@ import difflib
 import unicodedata
 from dataclasses import dataclass
 
+from anki_generator.common import FURIGANA_RE
 
-# Must accept exactly what the validator calls a kanji run (validator.KANJI_RUN_RE), \u3005
-# included: \u60a0\u3005[\u3086\u3046\u3086\u3046] is a well-formed annotation, and a base this pattern fails to
-# match is not consumed as an annotated word \u2014 its surface is emitted as wildcards *and*
-# its reading is appended, so the gold becomes \u60a0\u3005\u30e6\u30fc\u30e6\u30fc and can never match anything.
-_ANNOTATED_KANJI_RE = re.compile(
-    r'([\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3005]+)\[([^\]]+)\]'
-)
+
+# The shared annotation pattern (common.FURIGANA_RE). A base this pattern fails to match
+# is not consumed as an annotated word \u2014 its surface is emitted as wildcards *and* its
+# reading is appended, so the gold becomes \u60a0\u3005\u30e6\u30fc\u30e6\u30fc and can never match anything.
+_ANNOTATED_KANJI_RE = FURIGANA_RE
 
 _WRITTEN_TO_SPOKEN = {"ハ": "ワ", "ヘ": "エ", "ヲ": "オ"}
 
