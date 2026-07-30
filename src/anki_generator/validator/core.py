@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from anki_generator.schemas import ValidationResult
-from anki_generator.common import coerce_cards, TARGET_MARKER_RE
+from anki_generator.common import coerce_cards, TARGET_MARKER_RE, KANJI_RUN_RE, FURIGANA_RE
 from .joyo import hyogai_kanji, compute_is_hyogai
 
 # joyokanji Import: converts kyūjitai (舊字體, ≈ Korean traditional hanja) -> shinjitai (新字體).
@@ -211,6 +211,179 @@ def validate_yomigana(card):
 
     return ([], [])
 
+def _is_kana(text):
+    return all('ぁ' <= ch <= 'ん' or 'ァ' <= ch <= 'ヶ' or ch == 'ー' for ch in text)
+
+def _annotated_spans(annotated):
+    """Rebuild the plain sentence behind bracket-furigana text and locate every annotated
+    base inside it. Returns (plain, [(start, end, base, reading), ...]).
+
+    Spaces are separators for Anki's furigana renderer (話[はな]し 合[あ]おう), not sentence
+    content, so they are dropped: what Janome must analyse is the running sentence, and a
+    stray space would split a word and change its reading."""
+    plain, spans, pos = [], [], 0
+    length = 0
+
+    def _append(text):
+        nonlocal length
+        text = text.replace(' ', '').replace('　', '')
+        plain.append(text)
+        length += len(text)
+
+    for m in FURIGANA_RE.finditer(annotated):
+        _append(annotated[pos:m.start()])
+        base = m.group(1)
+        spans.append((length, length + len(base), base, m.group(2)))
+        _append(base)
+        pos = m.end()
+    _append(annotated[pos:])
+    return "".join(plain), spans
+
+def _predicted_reading(tokens, start, end):
+    """Janome's in-context reading for exactly the characters `[start, end)` — one
+    bracket's base — as `(reading, okurigana)` in hiragana, or None when the analysis
+    cannot be trusted for this span.
+
+    None covers every case where a warning would not be earned: the tokenizer chose a
+    different boundary, some token has no dictionary reading (Janome's '*'), or the token
+    that starts here runs past the base into more kanji. It does NOT cover the ordinary
+    case of a bracket that holds only a stem (妬[ねた]む, 躊躇[ためら]った) — there the
+    token legitimately extends over the okurigana, whose kana the reading must simply end
+    with, so that tail is subtracted and returned alongside."""
+    surface, reading = "", ""
+    for token_start, token_surface, token_reading in tokens:
+        if token_start < start:
+            continue
+        if token_start != start + len(surface):
+            return None            # a token boundary falls inside the base
+        if not token_reading or token_reading == '*':
+            return None            # Janome does not know this word
+        surface += token_surface
+        reading += token_reading
+        if len(surface) >= end - start:
+            break
+    if len(surface) < end - start:
+        return None
+
+    tail = katakana_to_hiragana(surface[end - start:])
+    if not _is_kana(tail):
+        return None                # the token swallowed the next annotated word
+    reading = katakana_to_hiragana(reading)
+    if tail and not reading.endswith(tail):
+        return None                # the analyzer reads the okurigana differently
+    return (reading[:len(reading) - len(tail)] if tail else reading), tail
+
+# Counters are their own orthographic swamp — 三軒 is さんげん, 一着 いっちゃく, 二十日
+# はつか — and IPADIC lists the regular form (さんけん, いちちゃく) as often as not. The
+# analyzer's pick carries no signal here, so numeral-led words are left alone.
+NUMERAL_KANJI = set('〇一二三四五六七八九十百千万億兆')
+
+_DICT_PROBE_FAILED = False
+
+# Rendaku: a compound voices the first mora of its second element (経験 + 不足[ふそく] →
+# 経験不足[けいけんぶそく]). The bracket annotates that element on its own, so the card's
+# reading is voiced where the dictionary's is not.
+_RENDAKU_TO_PLAIN = str.maketrans("がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽ",
+                                  "かきくけこさしすせそたちつてとはひふへほはひふへほ")
+
+def _unrendaku(reading):
+    return reading[0].translate(_RENDAKU_TO_PLAIN) + reading[1:] if reading else reading
+
+def _dictionary_readings(tokenizer, surface):
+    """Every reading IPADIC lists for exactly this surface, in hiragana.
+
+    Janome's tokenizer answers "what is this word here", which is the wrong question for
+    furigana: 間 is あいだ, ま, かん, けん or はざま depending on the word, and a card
+    annotating a different one than the analyzer picked in context is not thereby wrong.
+    The candidate set answers the question actually being asked — whether the reading on
+    the card exists for that surface at all.
+
+    This reaches into Janome's dictionary rather than its tokenizer, so it is guarded: if
+    the internals ever move, the cross-check goes quiet instead of turning every
+    alternative reading into a warning."""
+    global _DICT_PROBE_FAILED
+    if _DICT_PROBE_FAILED:
+        return None
+    try:
+        entries = tokenizer.sys_dic.lookup(surface.encode('utf-8'), tokenizer.matcher)
+        readings = set()
+        for entry in entries:
+            if entry[1] != surface:
+                continue  # lookup is a common-prefix search; shorter hits are other words
+            extra = tokenizer.sys_dic.lookup_extra(entry[0])
+            if extra and extra[4] != '*':
+                readings.add(katakana_to_hiragana(extra[4]))
+        return readings
+    except Exception:
+        _DICT_PROBE_FAILED = True
+        return None
+
+def validate_bracket_readings(card):
+    """Cross-validates every bracketed reading in back_reading, not only the card root.
+
+    Same contract as validate_yomigana and for the same reason: warnings only, and silence
+    wherever Janome's analysis is not trustworthy. Janome's dictionary does not cover many
+    N1/business words, so a mismatch is evidence of a typo worth a human glance, never
+    grounds for failing a card.
+
+    The bracket furigana is the reading the learner reads off the card, so it is worth
+    checking on its own. It is also what the Aivis pipeline treats as ground truth
+    (ADR-0013): a wrong bracket reading there does not merely display wrong, it gets
+    pushed into the user dictionary and forced into the audio."""
+    reading = card.get('back_reading')
+    if not isinstance(reading, str) or not reading:
+        return []
+
+    tokenizer = _get_tokenizer()
+    if tokenizer is None:
+        return []  # Skip cross-validation if Janome is not installed
+
+    plain, spans = _annotated_spans(reading)
+    if not spans:
+        return []
+
+    tokens, offset = [], 0
+    for token in tokenizer.tokenize(plain):
+        tokens.append((offset, token.surface, token.reading))  # type: ignore
+        offset += len(token.surface)  # type: ignore
+
+    warnings = []
+    for start, end, base, given in spans:
+        if base[0] in NUMERAL_KANJI:
+            continue
+        analysis = _predicted_reading(tokens, start, end)
+        if analysis is None:
+            continue
+        predicted, okurigana = analysis
+        given = katakana_to_hiragana(given)
+        if predicted == given:
+            continue
+
+        # The analyzer read it differently. That is only worth reporting if the card's
+        # reading is one IPADIC has never heard of for this word — otherwise it is an
+        # alternative reading and the analyzer's context, not the card, decided.
+        candidates = _dictionary_readings(tokenizer, base)
+        if candidates is None:
+            continue  # dictionary probe unavailable: no candidate set, no warning
+        if okurigana:
+            extra = _dictionary_readings(tokenizer, base + okurigana) or set()
+            candidates = candidates | {r[:len(r) - len(okurigana)]
+                                       for r in extra if r.endswith(okurigana)}
+        # An empty set means IPADIC does not list this surface as a word at all — usually
+        # a run of kanji the bracket spans as one unit (社内中, 初見) where the analyzer's
+        # own segmentation is the unreliable part. Nothing to contradict the card with.
+        if not candidates:
+            continue
+        if given in candidates or _unrendaku(given) in candidates:
+            continue
+
+        warnings.append(
+            f"Potential furigana mismatch in back_reading: '{base}[{given}]' — machine "
+            f"analysis reads '{base}{okurigana}' as '{predicted}{okurigana}' here, and "
+            f"'{given}' is not a dictionary reading of it. Informational only — check for "
+            "a typo, but do NOT retry generation over this.")
+    return warnings
+
 def validate_korean_presence(card):
     """Reverse language check for Pass B: back_meaning is the Korean meaning — if it
     contains no Hangul at all, the Korean pass probably answered in the wrong language.
@@ -223,10 +396,15 @@ def validate_korean_presence(card):
                 "explanation ([뜻]). Double-check the language. Informational only."]
     return []
 
+# A parenthetical in back_meaning is a gloss on the word — the usage note or the list of
+# senses — not part of the sentence translation.
+PARENTHETICAL_RE = re.compile(r'[(（][^)）]*[)）]')
+
 def validate_korean_meaning_length(card):
     """Checks that back_meaning is a full sentence translation matching front's sentence length.
     If back_meaning only translates the target word instead of the full example sentence,
     its character length will be disproportionately small compared to front.
+    Parenthetical glosses do not count toward that length — see PARENTHETICAL_RE.
     Returns (errors, warnings)."""
     front = card.get('front')
     meaning = card.get('back_meaning')
@@ -234,7 +412,7 @@ def validate_korean_meaning_length(card):
         return ([], [])
 
     clean_front = re.sub(r'[*_\s]', '', front)
-    clean_meaning = re.sub(r'[*_\s]', '', meaning)
+    clean_meaning = re.sub(r'[*_\s]', '', PARENTHETICAL_RE.sub('', meaning))
 
     if len(clean_front) >= 15:
         ratio = len(clean_meaning) / len(clean_front)
@@ -242,7 +420,8 @@ def validate_korean_meaning_length(card):
             return ([
                 f"Field 'back_meaning' ('{meaning}') is suspiciously short (ratio {ratio:.2f} vs "
                 f"'front' sentence length {len(clean_front)}). 'back_meaning' must be the full "
-                "Korean sentence translation, not just a word translation."
+                "Korean sentence translation, not just a word translation. Text inside "
+                "parentheses is a gloss on the word and does not count toward the translation."
             ], [])
         elif ratio < 0.50 and len(clean_front) >= 20:
             return ([], [
@@ -296,8 +475,10 @@ def validate_hyogai(card):
 
 # Generated cards are plain text: the target word is marked as *word* (checked here,
 # converted to a styled span at push time — TARGET_MARKER_RE in common.py is that
-# two-sided contract) and readings use Anki bracket furigana (決断[けつだん]).
-KANJI_RUN_RE = re.compile(r'[々一-鿿]+')  # CJK unified ideographs + 々
+# two-sided contract) and readings use Anki bracket furigana (決断[けつだん],
+# KANJI_RUN_RE / FURIGANA_RE in common.py).
+# Unlike FURIGANA_RE this deliberately matches *any* base before a bracket: its whole job
+# is to catch the bases that are not a clean kanji run.
 FURIGANA_BASE_RE = re.compile(r'([^\s\[\]]+)\[')
 
 def validate_front_marker(card):
@@ -422,6 +603,13 @@ def validate_card_json(json_file_path, auto_fix=False) -> ValidationResult:
             yomi_errs, yomi_warnings = validate_yomigana(card)
             if yomi_errs:
                 card_errors.extend(yomi_errs)
+
+            # 5b. The same cross-check per bracketed word. Only on annotation that already
+            # passed step 4: with a bracket missing or mis-attached the plain sentence
+            # cannot be rebuilt, so every pair after the bad one would be judged against a
+            # shifted alignment.
+            if not markup_errs:
+                yomi_warnings.extend(validate_bracket_readings(card))
 
             # 6. Korean commentary checks: presence check (warning) + sentence translation length check.
             card_warnings = yomi_warnings + validate_korean_presence(card)

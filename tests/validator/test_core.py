@@ -142,6 +142,29 @@ def test_korean_meaning_length_warns_on_moderately_short_translation():
     assert errors == []
     assert len(warnings) == 1 and "relatively short" in warnings[0]
 
+def test_korean_meaning_length_does_not_count_parenthetical_glosses():
+    # The gloss is a note about the word, and it is unbounded in length — this card is a
+    # word translation with no sentence in it, but its 25 characters used to pass.
+    card = {
+        "front": "相次ぐ不祥事を受け、株主は経営陣の説明に疑念を*抱いた*。",
+        "back_meaning": "(의문·불신·야망 등 감정이나 생각을) *품다*, 갖다"
+    }
+    errors, warnings = validate_korean_meaning_length(card)
+    assert len(errors) == 1 and "parentheses" in errors[0]
+    # The message quotes the field as written, gloss included, so it can be found.
+    assert "의문·불신" in errors[0]
+
+def test_korean_meaning_length_accepts_a_gloss_alongside_a_full_translation():
+    # The normal shape: a sense gloss AND the sentence. Stripping the gloss must not
+    # turn these into failures — 36 of 362 live cards carry a parenthetical.
+    card = {
+        "front": "度重なる失敗にも*挫けず*、彼は新規事業の立て直しに挑み続けた。",
+        "back_meaning": ("(기세·의욕이) 꺾이다, 좌절하다. 거듭된 실패에도 *꺾이지 않고* "
+                         "그는 신규 사업 재건에 계속 도전했다.")
+    }
+    errors, warnings = validate_korean_meaning_length(card)
+    assert errors == [] and warnings == []
+
 def test_korean_meaning_length_ignores_short_front_sentences():
     card = {
         "front": "彼は*走った*。",  # len 5 (< 15)
