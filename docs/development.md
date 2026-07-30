@@ -18,9 +18,10 @@ code cannot").
 
 ```bash
 uv sync                      # install deps (Python >= 3.13, uv-managed)
+./check.sh                   # all three gates at once — run this when the work is done
 uv run pytest                # run the test suite
 uv run ruff check            # lint (E402 ignored in tests/ — they bootstrap sys.path)
-uv run pyright               # type check
+uv run pyright               # type check (config in pyproject: data/ excluded)
 
 ./setup.sh <data-repo-url>   # full setup: deps + skill symlinks + data/ clone + DB init
 ./setup_symlinks.sh          # (re)create the .agents/skills + .claude/skills symlinks only
@@ -31,6 +32,11 @@ uv run anki-gen --help       # the single CLI entry point (pyproject [project.sc
 
 Tests must pass without Anki running and without a `data/` clone — Anki being offline is
 a designed-for normal state everywhere in this codebase, never an error path.
+
+CI (`.github/workflows/ci.yml`) runs ruff and pytest. Pyright is deliberately *not* a CI
+gate and is not missing from one: a green suite is what says the pipeline works, and type
+findings pytest cannot see do not earn the power to block a push. Run it locally through
+`./check.sh` and keep it clean there.
 
 ## Layout
 
@@ -123,6 +129,16 @@ an explicit user decision and a superseding ADR.
   furigana brackets, target marker) are hard errors; Janome yomigana cross-validation is
   a *warning only* — Janome misses N1/business words and hard-failing would trap the
   generation agent in an unwinnable retry loop.
+- **Reading cross-validation asks whether a reading exists, not whether the analyzer
+  agrees.** The root check (`validate_yomigana`) and the per-word bracket check
+  (`validate_bracket_readings`) both run on Janome, but a bracket is only reported when
+  IPADIC lists the surface *and* the card's reading is not among its entries. Comparing
+  against the analyzer's single in-context reading instead fires on every heteronym the
+  deck contains — 間[あいだ], 額[ひたい], 後[あと], 世論[よろん] — measured at 48 of 362
+  live cards, all correct. Rendaku (経験 不足[ぶそく]), numeral-led counters
+  (一粒[ひとつぶ]), surfaces IPADIC does not list (社内中), and any span whose token
+  boundaries do not line up are silent for the same reason. The cost of the rule is
+  accepted: a reading that is real but wrong *here* (躊躇[ちゅうちょ]った) passes.
 - **Retry cap lives in the sidecar** `cards/pending/.attempts.json`, outside the working
   file, so file rewrites cannot reset it.
 - **Archive semantics by default**: suspend + tag `ankigen-retired` — reversible, review

@@ -26,6 +26,22 @@ dev = [
 # Tests bootstrap sys.path before importing the package under test.
 "tests/*" = ["E402"]
 
+[tool.pyright]
+# `data/` is a separate private repository cloned into the working tree, not code this
+# repo owns or ships — type-checking it would report on files that live elsewhere.
+include = ["src", "tests"]
+exclude = ["data", ".venv", "**/__pycache__"]
+
+[[tool.pyright.executionEnvironments]]
+# Every `Cmd*Response` in `schemas/pipeline.py` is `total=False` on purpose: one envelope
+# per command, with the keys that a given outcome fills. Tests assert on those keys
+# directly, which is the point of the assertion — reading them through `.get()` to satisfy
+# the checker would weaken every test in the suite.
+root = "tests"
+# The repo root stays on the path: shared test helpers import as `tests.db_support`.
+extraPaths = ["."]
+reportTypedDictNotRequiredAccess = "none"
+
 [project.scripts]
 anki-gen = "anki_generator.cli:main"
 

@@ -19,6 +19,23 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
   and offline; record only defects or follow-up work that materially changes the design.
 - **Dependencies:** none.
 
+### Clear triage flags from the rescue loop
+
+- **Outcome:** let a rescue session retire the very signal it triages on. `rescue queue` selects
+  on live Anki flags and the leech tag, but nothing in the pipeline clears a flag, so every
+  diagnosed card resurfaces in the next queue until the user clears it by hand in the Anki
+  browser.
+- **Exit criteria:** a rescue-side command (or an option on `capture`) clears flags for cards
+  whose diagnosis is already recorded, defaulting to a dry run the way `delete-card` does, and
+  reports the card/note split — one note can carry flags on both its recognition and recall
+  cards.
+- **Implementation note:** AnkiConnect exposes no flag action; the only route is
+  `setSpecificValueOfCard` with `warning_check`, writing the `flags` column. It takes an **int**
+  — passing a string silently returns `[True]` and changes nothing, so the command must verify
+  the write instead of trusting the response.
+- **Evidence:** the 2026-07-30 rescue session diagnosed 27 notes (29 cards) and had to clear
+  them out of band.
+
 ### Continue weak-word promotion
 
 - **Outcome:** replace genuinely weak legacy vocabulary with higher-quality AnkiGen cards while
@@ -58,18 +75,6 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
   needed.
 - **Dependencies:** [ADR-0011](decisions/0011-single-kanji-reading-acquisition.md). Not on the
   critical path — run when time permits.
-
-### Per-word reading cross-validation
-
-- **Outcome:** validate each bracketed kanji-reading pair, not only the card root.
-- **Why it matters more now:** the Aivis pipeline treats the bracket furigana as ground truth
-  ([ADR-0013](decisions/0013-aivis-reading-verification.md)) — a wrong bracket reading is not
-  just a display defect, it makes the engine's correct pronunciation look like a mismatch and
-  gets that wrong reading forced into the audio through user-dictionary escalation. Today only
-  the card root is cross-checked, and only when Janome knows the word.
-- **Exit criteria:** useful diagnostics without turning Janome vocabulary gaps into hard retry
-  failures; the check remains warning-level. `reading_check.build_gold_reading` already splits
-  a sentence into per-word spans, so the decomposition exists.
 
 ### Weekly study report
 

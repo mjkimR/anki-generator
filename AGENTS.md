@@ -30,7 +30,8 @@ document for your job and skip the others.
 - **Working on the codebase** — changing or extending the pipeline, tests, or docs:
   read **`docs/development.md` before modifying code**. It carries the commands, the
   layout, and the settled architectural invariants that must not be broken without an
-  explicit user decision.
+  explicit user decision. Run **`./check.sh`** (ruff + pytest + pyright) when the work is
+  finished, and report the result rather than calling it done unverified.
 - **Explaining usage to the user** — `docs/user_guide/` is the human-facing how-to
   (`README.md` English, `README.kr.md` Korean).
 
