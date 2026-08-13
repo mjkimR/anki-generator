@@ -20,6 +20,18 @@
    AZURE_SPEECH_KEY=<your-key>
    AZURE_SPEECH_REGION=<your-region>
    ```
+   Amazon Polly is the other cloud provider — it forces the card's furigana the same way
+   Azure does, but annotates the word in place instead of replacing it, so the sentence
+   keeps its natural intonation:
+   ```dotenv
+   TTS_PROVIDER=polly
+   TTS_DEFAULT_VOICE=Tomoko        # ja-JP neural voices: Tomoko, Kazuha, Takumi
+   AWS_ACCESS_KEY_ID=<your-key-id>
+   AWS_SECRET_ACCESS_KEY=<your-secret>
+   AWS_DEFAULT_REGION=ap-northeast-1
+   ```
+   Credentials go through the standard AWS chain, so an AWS profile works just as well;
+   `POLLY_REGION` overrides the region for Polly alone.
    Set `TTS_PROVIDER=edge` or `TTS_PROVIDER=aivis` (AivisSpeech API; `AIVIS_API_URL`, `AIVIS_SPEAKER_ID`)
    when desired. Provider failures do not fall back automatically. With `aivis`, the doctor
    also checks that the engine is reachable, and every synthesis verifies the engine's

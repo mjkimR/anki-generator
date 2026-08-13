@@ -9,6 +9,23 @@ it when its exit criteria are met instead of marking it `SHIPPED` forever.
 
 ## Now
 
+### Choose a TTS engine that is both accurate and natural
+
+- **Outcome:** end the accuracy-vs-naturalness split exposed by the Aivis articulation
+  gap (verified moras ≠ guaranteed audio; see
+  [issue-tts-engine-selection.md](issue-tts-engine-selection.md)). Azure is the interim
+  provider: readings are forced by construction, at the cost of awkward prosody.
+- **Status (2026-08-13):** the Polly samples passed the ear test, so Polly ships as a
+  selectable provider (`TTS_PROVIDER=polly`, voice `Tomoko`,
+  renderer `polly-yomigana-v1`) and is on live trial. The default is still `azure`;
+  VOICEVOX was not tested and is only needed if the trial fails.
+- **Exit criteria:** live-review Polly audio long enough to commit or reject it. Adopt →
+  flip the default in `config.py`, write the ADR superseding ADR-0010's provider clause,
+  run the gated backfill. Reject → fall back to the issue doc's ladder (VOICEVOX, then an
+  ASR back-check gate before any Aivis audio ships again).
+- **Dependencies:** runs on the TTS push machine (AWS credentials live there). The pending
+  362-card audio backfill is gated on this decision.
+
 ### Validate the output-practice loop in real use
 
 - **Outcome:** confirm the loop produces useful sessions outside unit tests. Live Anki lapse

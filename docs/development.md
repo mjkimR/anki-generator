@@ -112,12 +112,17 @@ an explicit user decision and a superseding ADR.
   (`synced_to_anki` only ratchets up)
   ([ADR-0002](decisions/0002-merge-then-mirror-sync.md)).
 - **TTS happens at push time, never at generation time** — audio is made on the machine
-  that pushes. `TTS_PROVIDER` explicitly selects `azure` (default), `edge`, or `aivis`; provider
+  that pushes. `TTS_PROVIDER` explicitly selects `azure` (default), `polly`, `edge`, or
+  `aivis`; provider
   failures never fall back or push a silent note. Azure renders whole annotated
-  pronunciation units as SSML substitutions; Edge speaks `reading_to_kana(back_reading)`;
+  pronunciation units as SSML substitutions; Polly annotates them in place with
+  `<phoneme alphabet="x-amazon-yomigana">`, forcing the reading without discarding the
+  surface word; Edge speaks `reading_to_kana(back_reading)`;
   Aivis speaks the plain kanji sentence, verified against the bracket furigana via
   `audio_query` with temporary user-dictionary escalation, failing closed on any residual
-  mismatch ([ADR-0013](decisions/0013-aivis-reading-verification.md)).
+  mismatch ([ADR-0013](decisions/0013-aivis-reading-verification.md)) — with the caveat
+  that the verification covers the engine's *analysis*, not its acoustics
+  ([issue-tts-engine-selection.md](issue-tts-engine-selection.md)).
   The cache key includes provider, renderer version, voice, and annotated input
   ([ADR-0010](decisions/0010-explicit-fail-closed-tts-provider.md)).
 - **`audio_path` stores a bare filename**, resolved against `media/` on read.

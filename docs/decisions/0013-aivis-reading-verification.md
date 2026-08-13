@@ -102,3 +102,15 @@ CLIs; concurrent syntheses against one engine would race on the shared dictionar
   speaker or engine. Because the gold side is the card's own furigana, a mismatch is
   equally evidence that the *furigana* is wrong (通[とお]じて for つうじて was caught this
   way), which makes the audit a card-quality check and not only a TTS one.
+
+## Addendum: articulation is not covered (2026-08-04)
+
+A live card showed that "`audio_query` answers the same question synthesis does" holds
+for the engine's *analysis* but not its *acoustics*: 層に verified as ソウニ yet the
+synthesized audio articulated something else. The engine is an end-to-end
+Style-Bert-VITS2 model — the verified moras are an input, but `AudioQuery.kana` carries
+the original kanji sentence as conditioning text, per-mora pitch/length are unsupported,
+and the model generates articulation itself, so it can drift from the reading this ADR
+verifies. The guarantee above should therefore be read as "no *analysis-stage* wrong
+reading ships"; acoustic deviations are detectable only by listening. Engine selection
+in response is tracked in [docs/issue-tts-engine-selection.md](../issue-tts-engine-selection.md).

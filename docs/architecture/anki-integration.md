@@ -72,7 +72,7 @@ are treated as already synchronized so retries remain idempotent.
 ## TTS
 
 TTS runs at push time through the provider explicitly selected by `TTS_PROVIDER`: `azure`
-(default), `edge`, or `aivis`. There is no automatic fallback. Azure receives SSML with Katakana kanji-run
+(default), `polly`, `edge`, or `aivis`. There is no automatic fallback. Azure receives SSML with Katakana kanji-run
 substitutions (`<sub alias="ハ">果</sub>てた`) so G2P never misreads a kanji or voices a
 reading-initial `は/へ` as the particle `わ/え`, while leaving okurigana and particles outside `sub`
 nodes in natural Japanese context so genuine topic particles are still read correctly. Inter-word
@@ -81,6 +81,20 @@ that a plain-hiragana segment beginning with `は` is not fused onto the precedi
 as topic particle `わ (wa)`. This correctness depends on the validator's spacing convention —
 particles hug the preceding word and a space precedes each new bunsetsu. Edge receives the validated
 kana produced by `reading_to_kana(back_reading)`.
+
+Polly forces the same validated readings through a different mechanism: each annotated kanji run
+becomes `<phoneme alphabet="x-amazon-yomigana" ph="きょうじゅ">享受</phoneme>`, which annotates the
+word instead of replacing it, so the front end still sees the sentence its prosody is derived
+from. Spaces are stripped rather than preserved — with every kanji run carrying its own reading
+the spaces are no longer a correctness device, and unspaced text is what a Japanese front end
+expects. The voice is an API parameter (`TTS_DEFAULT_VOICE` holds a Polly voice id such as
+`Kazuha`, validated before the request so another provider's voice name in `.env` fails as
+configuration rather than as a remote `ValidationException`), the engine is pinned to `neural`
+(the only engine with full `<phoneme>` support), and credentials come from the standard AWS chain
+that boto3 resolves — `.env` is loaded into the environment, so `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_DEFAULT_REGION` belong there like any other per-machine
+setting (`POLLY_REGION` overrides the region for this service alone). Polly's failures keep the service error code, message, and request id; only throttling
+and service-side faults are marked retryable.
 
 Aivis receives the natural kanji sentence with spaces stripped (the engine reads them as phrase
 breaks) and is verified rather than pre-corrected: the provider diffs the `audio_query`

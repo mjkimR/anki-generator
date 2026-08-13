@@ -13,6 +13,15 @@
    AZURE_SPEECH_KEY=<your-key>
    AZURE_SPEECH_REGION=<your-region>
    ```
+   Amazon Polly도 클라우드 provider로 쓸 수 있습니다. Azure와 똑같이 카드 후리가나를 강제하되, 단어를 치환하지 않고 그 자리에 독음만 달기 때문에 문장 억양이 자연스럽게 유지됩니다:
+   ```dotenv
+   TTS_PROVIDER=polly
+   TTS_DEFAULT_VOICE=Tomoko        # ja-JP 뉴럴 보이스: Tomoko, Kazuha, Takumi
+   AWS_ACCESS_KEY_ID=<your-key-id>
+   AWS_SECRET_ACCESS_KEY=<your-secret>
+   AWS_DEFAULT_REGION=ap-northeast-1
+   ```
+   자격증명은 AWS 표준 체인을 타므로 AWS 프로파일을 써도 됩니다. `POLLY_REGION`은 Polly에만 적용되는 리전 오버라이드입니다.
    Edge나 AivisSpeech를 사용할 경우 `TTS_PROVIDER=edge` 또는 `TTS_PROVIDER=aivis`(`AIVIS_API_URL`, `AIVIS_SPEAKER_ID` 설정)로 지정합니다. Provider 실패 시 다른 엔진으로 자동 전환되지 않습니다. `aivis` 선택 시 doctor가 엔진 도달 가능 여부도 확인하며, 매 합성마다 엔진의 독음을 카드 후리가나와 대조 검증합니다 — 자동 교정에 실패한 카드는 잘못된 음성 대신 pending 상태로 남습니다.
 3. 환경 점검은 `doctor` 명령어로 수행:
    ```bash
