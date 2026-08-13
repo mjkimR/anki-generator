@@ -148,6 +148,60 @@ def test_doctor_accepts_reachable_aivis_engine(tmp_path, monkeypatch):
     assert check["ok"] is True
     assert "aivis" in check["detail"]
 
+def fake_boto3_session(monkeypatch, credentials=object(), region="ap-northeast-1"):
+    from types import SimpleNamespace
+    from anki_generator.tts_helper import core as tts_core
+
+    def session(region_name=None):
+        return SimpleNamespace(get_credentials=lambda: credentials,
+                               region_name=region_name or region)
+    monkeypatch.setattr(tts_core, "_load_boto3",
+                        lambda: SimpleNamespace(Session=session))
+
+def test_doctor_accepts_configured_polly_provider(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "polly")
+    monkeypatch.setattr(config, "TTS_DEFAULT_VOICE", "Kazuha")
+    monkeypatch.setattr(config, "POLLY_REGION", "ap-northeast-1")
+    fake_anki_offline(monkeypatch)
+    fake_boto3_session(monkeypatch)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+
+    check = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert check["ok"] is True
+    assert "polly" in check["detail"] and "Kazuha" in check["detail"]
+
+def test_doctor_rejects_polly_without_resolvable_credentials(tmp_path, monkeypatch):
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "polly")
+    monkeypatch.setattr(config, "TTS_DEFAULT_VOICE", "Kazuha")
+    fake_anki_offline(monkeypatch)
+    fake_boto3_session(monkeypatch, credentials=None)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+
+    assert code == 1 and result["status"] == "error"
+    check = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert check["ok"] is False
+    assert "AWS_ACCESS_KEY_ID" in check["detail"]
+
+def test_doctor_rejects_polly_with_another_providers_voice(tmp_path, monkeypatch):
+    # The machine switched TTS_PROVIDER but left Azure's voice name in .env — the doctor
+    # is where that must surface, not the first failed push.
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "polly")
+    monkeypatch.setattr(config, "TTS_DEFAULT_VOICE", "ja-JP-NanamiNeural")
+    fake_anki_offline(monkeypatch)
+    fake_boto3_session(monkeypatch)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+
+    assert code == 1 and result["status"] == "error"
+    check = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert check["ok"] is False
+    assert "Kazuha" in check["detail"]
+
 def test_doctor_flags_attempts_mirror_drift(tmp_path, monkeypatch):
     patch_backup(monkeypatch, tmp_path)  # empty data dir — no attempts mirror
     fake_anki_offline(monkeypatch)

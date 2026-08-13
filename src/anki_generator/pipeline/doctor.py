@@ -35,6 +35,7 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
     else:
         try:
             provider = core.tts_helper.resolve_provider()
+            voice = config.TTS_DEFAULT_VOICE
             if provider == "azure":
                 import os
                 if not os.getenv("AZURE_SPEECH_KEY") or not os.getenv("AZURE_SPEECH_REGION"):
@@ -42,8 +43,29 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
                         "AZURE_SPEECH_KEY and AZURE_SPEECH_REGION must both be configured")
                 if core.tts_helper.core._load_azure_speech() is None:
                     raise RuntimeError("azure-cognitiveservices-speech is not installed")
-            voice = config.TTS_DEFAULT_VOICE
-            if provider == "aivis":
+            elif provider == "polly":
+                boto3 = core.tts_helper.core._load_boto3()
+                if boto3 is None:
+                    raise RuntimeError("boto3 is not installed")
+                # Resolving the credential chain and the region is local work — the check
+                # never spends a synthesis call, and a machine that cannot resolve either
+                # would fail every card at push time.
+                session = boto3.Session(region_name=config.POLLY_REGION)
+                if session.get_credentials() is None:
+                    raise RuntimeError(
+                        "no AWS credentials resolved; set AWS_ACCESS_KEY_ID and "
+                        "AWS_SECRET_ACCESS_KEY in .env (or configure an AWS profile)")
+                region = session.region_name
+                if not region:
+                    raise RuntimeError(
+                        "no AWS region resolved; set AWS_DEFAULT_REGION in .env "
+                        "(or POLLY_REGION to override it for Polly alone)")
+                if not core.tts_helper.core.is_polly_voice_id(voice):
+                    raise RuntimeError(
+                        f"TTS_DEFAULT_VOICE='{voice}' is not a Polly voice id; use a "
+                        f"ja-JP neural voice (Kazuha, Tomoko, Takumi)")
+                voice = f"{voice} @ polly:{region}"
+            elif provider == "aivis":
                 import urllib.request
                 aivis_url = config.resolve_aivis_api_url().rstrip("/")
                 try:
@@ -57,7 +79,7 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
                 # voice name) is ignored here. Report what actually speaks, or the check
                 # reads as if a configured voice were in use when it is not.
                 voice = f"style {config.AIVIS_SPEAKER_ID} @ {aivis_url}"
-            elif provider != "azure" and core.tts_helper.core._load_edge_tts() is None:
+            elif provider == "edge" and core.tts_helper.core._load_edge_tts() is None:
                 raise RuntimeError("edge-tts is not installed")
             add("tts_provider", True,
                 f"{provider}, voice={voice}, automatic fallback disabled")
