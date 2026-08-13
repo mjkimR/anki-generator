@@ -9,14 +9,17 @@ from .providers.factory import get_provider
 from .providers.azure import _load_azure_speech as _load_azure_speech
 from .providers.azure import AzureTTSProvider
 from .providers.edge import _load_edge_tts as _load_edge_tts
+from .providers.polly import _load_boto3 as _load_boto3
+from .providers.polly import is_polly_voice_id as is_polly_voice_id
 from .providers.base import BaseTTSProvider
 
 
-SUPPORTED_PROVIDERS = ("azure", "edge", "aivis")
+SUPPORTED_PROVIDERS = ("azure", "edge", "aivis", "polly")
 RENDER_VERSIONS = {
     "azure": "azure-ssml-v2",
     "edge": "edge-kana-v1",
     "aivis": "aivis-dict-v1",
+    "polly": "polly-yomigana-v1",
 }
 
 

@@ -13,6 +13,7 @@ dependencies = [
     "joyokanji>=1.1.0",
     "click>=8.1.0",
     "azure-cognitiveservices-speech>=1.42.0",
+    "boto3>=1.43.70",
 ]
 
 [dependency-groups]

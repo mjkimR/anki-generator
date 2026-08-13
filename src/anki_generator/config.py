@@ -134,6 +134,13 @@ AIVIS_INTONATION_SCALE = float(os.getenv("AIVIS_INTONATION_SCALE", "1.0"))
 AIVIS_PITCH_SCALE = float(os.getenv("AIVIS_PITCH_SCALE", "0.0"))
 AIVIS_VOLUME_SCALE = float(os.getenv("AIVIS_VOLUME_SCALE", "1.0"))
 AIVIS_ENABLE_UPSPEAK = os.getenv("AIVIS_ENABLE_UPSPEAK", "1").strip().lower() not in ("0", "false", "no")
+# Amazon Polly needs no key variables of its own: boto3 resolves credentials from the
+# standard AWS chain, and load_dotenv() above puts .env into the environment, so
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION live in .env like every
+# other per-machine setting. POLLY_REGION overrides the region for this one service; unset means
+# "whatever the AWS chain resolves". The voice is the shared TTS_DEFAULT_VOICE (a Polly
+# voice id such as Kazuha), so it stays in the audio cache key like every other provider's.
+POLLY_REGION = os.getenv("POLLY_REGION", "").strip() or None
 
 
 

@@ -20,8 +20,9 @@ TARGET_MARKER_RE = re.compile(r"\*([^*\n]+)\*")
 # Bracket furigana (決断[けつだん]) is read by four sides: the validator checks the
 # annotation is well-formed and cross-checks each reading against Janome
 # (validator/core.py), the Aivis check builds its gold pronunciation from it
-# (tts_helper/reading_check.py), and the Azure provider turns every pair into an SSML
-# `<sub>` alias (tts_helper/providers/azure.py). They each carried their own copy of this
+# (tts_helper/reading_check.py), and the SSML providers turn every pair into a forced
+# reading — an Azure `<sub>` alias (providers/azure.py) or a Polly `<phoneme>` annotation
+# (providers/polly.py). They each carried their own copy of this
 # pattern and the copies had already drifted over 々: a side that leaves it out of the
 # kanji run does not see 悠々[ゆうゆう] as one annotated word at all.
 KANJI_RUN_RE = re.compile(r'[々㐀-䶿一-鿿豈-﫿]+')

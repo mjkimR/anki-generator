@@ -3,6 +3,7 @@ from .base import BaseTTSProvider
 from .azure import AzureTTSProvider
 from .aivis import AivisTTSProvider
 from .edge import EdgeTTSProvider
+from .polly import PollyTTSProvider
 
 
 class TTSProviderFactory:
@@ -13,6 +14,7 @@ class TTSProviderFactory:
             "azure": AzureTTSProvider(),
             "aivis": AivisTTSProvider(),
             "edge": EdgeTTSProvider(),
+            "polly": PollyTTSProvider(),
         }
 
     def get_provider(self, provider_name: str) -> BaseTTSProvider:
