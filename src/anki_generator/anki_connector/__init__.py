@@ -12,6 +12,7 @@ from .core import (
     route_hyogai_cards,
     cards_of_notes,
     archive_notes,
+    clear_card_flags,
     delete_notes,
     push_to_anki,
     invoke,
@@ -23,6 +24,7 @@ from .core import (
     HYOGAI_TAG,
     HYOGAI_PRIORITIES,
     ARCHIVE_TAG,
+    USER_FLAG_MASK,
     _load_model_assets,
 )
 from .kanji import (
@@ -49,6 +51,7 @@ __all__ = [
     "route_hyogai_cards",
     "cards_of_notes",
     "archive_notes",
+    "clear_card_flags",
     "delete_notes",
     "push_to_anki",
     "invoke",
@@ -60,6 +63,7 @@ __all__ = [
     "HYOGAI_TAG",
     "HYOGAI_PRIORITIES",
     "ARCHIVE_TAG",
+    "USER_FLAG_MASK",
     "_load_model_assets",
     "ensure_kanji_model",
     "push_kanji_card",

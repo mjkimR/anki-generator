@@ -297,3 +297,44 @@ def test_update_note_audio_routes_through_the_shared_primitive(tmp_path, monkeyp
     fname = anki_connector.update_note_audio(42, str(audio))
     assert fname == "妥協.mp3"
     assert captured["note"] == {"id": 42, "fields": {"Audio": "[sound:妥協.mp3]"}}
+
+def test_clear_card_flags_writes_an_int_and_verifies_the_result(monkeypatch):
+    # setSpecificValueOfCard silently no-ops on a string value, so the write is verified by
+    # re-reading rather than trusted, and only the user-flag bits are touched.
+    state = {601: 0b1_010, 602: 3}          # 601 carries flag 2 plus a higher bit set
+    writes = []
+
+    def fake_invoke(action, **params):
+        if action == "cardsInfo":
+            return [{"cardId": c, "flags": state[c]} for c in params["cards"]]
+        if action == "setSpecificValueOfCard":
+            assert params["keys"] == ["flags"] and params["warning_check"] is True
+            value = params["newValues"][0]
+            assert isinstance(value, int) and not isinstance(value, bool)
+            writes.append((params["card"], value))
+            state[params["card"]] = value
+            return [True]
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    cleared, still = anki_connector.clear_card_flags([601, 602])
+    assert (cleared, still) == ([601, 602], [])
+    assert writes == [(601, 0b1_000), (602, 0)]   # the non-flag bit on 601 survives
+
+def test_clear_card_flags_reports_cards_the_write_did_not_take_on(monkeypatch):
+    def fake_invoke(action, **params):
+        if action == "cardsInfo":
+            return [{"cardId": c, "flags": 7} for c in params["cards"]]   # never changes
+        if action == "setSpecificValueOfCard":
+            return [True]                                                # the lying response
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    assert anki_connector.clear_card_flags([601]) == ([], [601])
+
+def test_clear_card_flags_empty_input_touches_nothing(monkeypatch):
+    def fake_invoke(action, **params):
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
+    assert anki_connector.clear_card_flags([]) == ([], [])

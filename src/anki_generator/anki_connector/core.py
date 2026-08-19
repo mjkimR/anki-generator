@@ -392,6 +392,34 @@ def archive_notes(note_ids):
         invoke("addTags", notes=note_ids, tags=ARCHIVE_TAG)
     return len(cards)
 
+USER_FLAG_MASK = 0b111        # Anki keeps the triage flag in the low three bits of cards.flags
+
+def clear_card_flags(card_ids):
+    """Clears the triage flag off the given cards. Returns (cleared, still_flagged) card ids.
+
+    AnkiConnect exposes no flag action, so the only route is `setSpecificValueOfCard` writing
+    the raw `flags` column, which needs `warning_check` to touch a protected field. Two traps
+    make this a verified write rather than a fire-and-forget one: the value must be an **int**
+    (a string returns `[True]` and changes nothing), and only the low three bits are the user
+    flag, so the rest of the column is preserved instead of being zeroed. The cards are re-read
+    afterwards and any that still carry a flag are reported rather than assumed written."""
+    card_ids = [int(c) for c in card_ids]
+    if not card_ids:
+        return [], []
+    current = {}
+    for chunk in _chunked(card_ids):
+        for info in invoke("cardsInfo", cards=chunk):
+            current[info.get("cardId")] = info.get("flags", 0) or 0
+    for card_id in card_ids:
+        invoke("setSpecificValueOfCard", card=card_id, keys=["flags"],
+               newValues=[current.get(card_id, 0) & ~USER_FLAG_MASK], warning_check=True)
+    still = []
+    for chunk in _chunked(card_ids):
+        for info in invoke("cardsInfo", cards=chunk):
+            if (info.get("flags", 0) or 0) & USER_FLAG_MASK:
+                still.append(info.get("cardId"))
+    return [c for c in card_ids if c not in set(still)], still
+
 def delete_notes(note_ids):
     """Permanently removes notes from the collection, review history included.
 
