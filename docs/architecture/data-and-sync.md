@@ -110,8 +110,9 @@ archives the working file and refreshes JSONL, leaving `synced_to_anki=0`. The n
 pipeline run drains all pending rows; `anki-gen sync-pending` is the manual recovery path when
 no new generation session is expected.
 
-TTS is deliberately absent from generation-only work. Audio is generated immediately before
-push on the machine that owns the Anki collection. A failed synthesis leaves an empty
+TTS is deliberately absent from generation-only work, and from any machine whose push path
+is closed (`ANKI_PUSH_ENABLED=0`). Audio is generated immediately before push on the machine
+that owns the Anki collection. A failed synthesis leaves an empty
 `audio_path` and the card pending; after fixing the selected provider, `anki-gen sync-pending`
 retries both synthesis and push. `anki-gen backfill-audio` remains for older notes that were
 already synced without audio.

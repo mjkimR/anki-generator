@@ -13,7 +13,10 @@
 1. `./setup.sh <private-data-repo-url>` has been run (dependencies + skill symlink +
    `data/` clone + DB init, all in one).
 2. Anki Desktop + the AnkiConnect add-on (port 8765) are running — if this machine will
-   only generate cards and another machine will push, set `ANKI_ENABLED=0` in `.env`.
+   only generate cards and another machine will push, set `ANKI_ENABLED=0` in `.env`. To
+   keep using Anki here for review triage while still leaving the pushing to another
+   machine, set `ANKI_PUSH_ENABLED=0` instead: cards are generated and stored, but no note
+   is pushed and no audio is synthesized on this machine.
    On an Anki-equipped machine, configure the default Azure provider in `.env`:
    ```dotenv
    TTS_PROVIDER=azure
@@ -122,8 +125,12 @@ For each card you pick **one** treatment and the agent runs it:
   handed off to the card-generation / legacy skills.
 - **Retire** the card — suspended + tagged, fully reversible (never deletion).
 
+Once a card is treated the agent clears its flag, so it stops coming back in the next queue.
+
 Whatever you decide is recorded (the *feedback harvest*), so over time the recurring kinds of
-failure become visible. Run rescue with Anki open: the queue needs it (it comes back empty when
+failure become visible. One flag is left alone: **purple (flag 7)** never enters the queue, so
+you can use it as your own marker for cards with a pipeline problem — bad audio, say — rather
+than a memory problem. Run rescue with Anki open: the queue needs it (it comes back empty when
 Anki is closed), and editing a card that's already in Anki needs Anki reachable so the change
 actually lands there — otherwise the edit is refused with nothing changed (a card not yet pushed
 can be edited offline and rides the next push). Ends the same way as every session: commit `data/`.
@@ -140,7 +147,9 @@ uv run anki-gen sync-pending
 ```
 
 On an `ANKI_ENABLED=0` (generation-only) machine, committing & pushing `data/` *is* the
-wrap-up — an Anki-equipped machine picks the cards up from there after a pull.
+wrap-up — an Anki-equipped machine picks the cards up from there after a pull. The same
+holds with `ANKI_PUSH_ENABLED=0`, except Anki stays available here for leech rescue and
+in-place edits; only the push (and its audio) waits for the other machine.
 
 TTS is fail-closed: if the selected provider is unavailable, the affected card is not
 pushed silently and remains pending. Fix the reported provider configuration or service
@@ -195,6 +204,7 @@ alias akg='uv run anki-gen'
 | `akg practice stats` | Practice report: correct rate, struggling words (`--word "単語(よみ)"` for one word's history) |
 | `akg practice list-confusions` | Review the captured confusable-word groups (`--all` includes resolved ones) |
 | `akg rescue queue` | Surface your leeching / flagged / high-lapse cards to triage (read-only; empty when Anki is closed) |
+| `akg rescue clear-flag <word>` | Clear the Anki flag off a card you've dealt with, so it stops resurfacing (dry run unless `--confirm`) |
 | `akg db check "単語"` | Does this word already have a card + was it known in the legacy decks |
 | `akg db check-batch … / --file <list>` | Dedup-check many mined candidates at once (text-mining batch mode): new / has-card / known-legacy |
 | `akg db pending` | List cards not yet pushed to Anki |
@@ -205,7 +215,7 @@ alias akg='uv run anki-gen'
 | `akg legacy retired-list` / `coverage` | Retirement ledger / example-sentence exposure (no Anki needed) |
 
 The rest (`run`, `snapshot`, `archive-duplicates`, `practice check`/`log`/`add-confusion`/
-`dismiss`/`resolve-confusion`, `rescue capture`/`edit`/`retire`, …) are commands the agent runs
+`dismiss`/`resolve-confusion`, `rescue capture`/`edit`/`retire`/`clear-flag`, …) are commands the agent runs
 for you mid-conversation — you'll rarely type them yourself.
 
 ## 8. Symptom → remedy

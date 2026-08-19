@@ -42,7 +42,9 @@ findings pytest cannot see do not earn the power to block a push. Run it locally
 
 - `src/anki_generator/config.py` — all paths and env vars (`.env`, gitignored, per-machine):
   `ANKI_CONNECT_URL`, `ANKI_DEFAULT_DECK`, `ANKI_LISTENING_DECK`, `ANKI_HYOGAI_DECK`,
-  `ANKI_NOTE_MODEL`, `ANKI_ENABLED` (`0` = generation-only machine), `TTS_PROVIDER`,
+  `ANKI_NOTE_MODEL`, `ANKI_ENABLED` (`0` = generation-only machine),
+  `ANKI_PUSH_ENABLED` (`0` = Anki stays reachable for triage but no card is pushed and
+  nothing is synthesized; ask `config.push_enabled()`, never either flag alone), `TTS_PROVIDER`,
   `TTS_DEFAULT_VOICE`. Never hardcode
   paths or deck names elsewhere — add them here.
 - `src/anki_generator/cli.py` — the `anki-gen` Click entry point; the ONLY way the

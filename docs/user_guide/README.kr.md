@@ -7,7 +7,7 @@
 ## 0. 전제 조건 (기기당 최초 1회)
 
 1. `./setup.sh <private-data-repo-url>` 실행 (의존성 설치, 스킬 심링크 생성, `data/` 클론, DB 초기화가 한 번에 수행됨).
-2. Anki Desktop 및 AnkiConnect 애드온(포트 8765) 실행 — 카드 생성만 이 기기에서 하고 푸시는 다른 기기에서 처리하려면 `.env` 파일에 `ANKI_ENABLED=0`을 설정합니다. Anki 연동 기기에서는 기본 Azure provider를 `.env`에 설정합니다:
+2. Anki Desktop 및 AnkiConnect 애드온(포트 8765) 실행 — 카드 생성만 이 기기에서 하고 푸시는 다른 기기에서 처리하려면 `.env` 파일에 `ANKI_ENABLED=0`을 설정합니다. 이 기기에서 복습·리치 진단은 계속하면서 푸시만 다른 기기에 맡기려면 `ANKI_ENABLED` 대신 `ANKI_PUSH_ENABLED=0`을 설정합니다. 카드는 생성·저장되지만 노트 푸시와 음성 합성은 이 기기에서 일어나지 않습니다. Anki 연동 기기에서는 기본 Azure provider를 `.env`에 설정합니다:
    ```dotenv
    TTS_PROVIDER=azure
    AZURE_SPEECH_KEY=<your-key>
@@ -98,7 +98,11 @@
   스킬로 넘어갑니다.
 - **은퇴(retire)** — 보류(suspend)+태그, 완전히 되돌릴 수 있음(삭제 아님).
 
-무엇을 결정하든 기록되므로(*피드백 수확*), 시간이 지나면 반복되는 실패 유형이 드러납니다. 정리는
+치료가 끝난 카드는 에이전트가 플래그를 해제하므로 다음 큐에 다시 뜨지 않습니다.
+
+무엇을 결정하든 기록되므로(*피드백 수확*), 시간이 지나면 반복되는 실패 유형이 드러납니다.
+플래그 중 **보라색(flag 7)** 하나는 큐에 절대 올라오지 않으므로, 기억의 문제가 아니라 파이프라인
+문제(예: 음성이 이상함)를 표시하는 자기만의 마커로 쓸 수 있습니다. 정리는
 Anki를 켜고 하세요 — 큐도 Anki가 필요하고(꺼져 있으면 빈 목록), 이미 Anki에 있는 카드를
 편집하려면 변경이 실제로 반영되도록 Anki가 켜져 있어야 합니다(안 되면 아무것도 안 바꾸고 거부;
 아직 안 밀린 카드는 오프라인 편집 후 다음 푸시에 반영). 마무리는 모든 세션과 동일하게 `data/`
@@ -112,7 +116,7 @@ Anki가 꺼져 있어도 오류가 발생하지 않습니다. 카드는 DB에 '�
 uv run anki-gen sync-pending
 ```
 
-`ANKI_ENABLED=0` 기기(생성 전용)에서는 `data/` 디렉토리를 커밋하고 푸시하는 것으로 작업이 마무리됩니다. 이후 Anki가 연동된 기기에서 `git pull`을 받으면 해당 기기에서 푸시가 처리됩니다.
+`ANKI_ENABLED=0` 기기(생성 전용)에서는 `data/` 디렉토리를 커밋하고 푸시하는 것으로 작업이 마무리됩니다. 이후 Anki가 연동된 기기에서 `git pull`을 받으면 해당 기기에서 푸시가 처리됩니다. `ANKI_PUSH_ENABLED=0` 기기도 마무리 방식은 같습니다. 다만 이 기기에서도 Anki는 그대로 쓸 수 있어 리치 진단·카드 수정은 계속 가능하고, 푸시와 음성 합성만 다른 기기 몫으로 남습니다.
 
 TTS는 fail-closed 방식입니다. 선택한 provider를 사용할 수 없으면 해당 카드는 음성 없이 푸시되지 않고 pending 상태로 남습니다. 표시된 provider 설정 또는 서비스 오류를 해결한 뒤 `uv run anki-gen sync-pending`을 다시 실행하세요.
 
@@ -154,6 +158,7 @@ alias akg='uv run anki-gen'
 | `akg practice stats` | 연습 리포트: 정답률·계속 틀리는 단어 (`--word "単語(よみ)"`로 단어별 이력) |
 | `akg practice list-confusions` | 캡처된 혼동 단어 그룹 조회 (`--all`이면 해소된 그룹 포함) |
 | `akg rescue queue` | 리치·플래그·lapses 높은 카드를 뽑아 정리 대상으로 확인 (읽기 전용; Anki 꺼져 있으면 빈 목록) |
+| `akg rescue clear-flag <단어>` | 처리 끝난 카드의 Anki 플래그를 해제해 다음 큐에 다시 안 뜨게 함 (`--confirm` 없으면 미리보기) |
 | `akg db check "単語"` | 특정 단어의 기존 카드 존재 여부 및 레거시 덱 등록 여부 확인 |
 | `akg db check-batch … / --file <목록>` | 마이닝한 후보 단어들을 한 번에 중복 체크(텍스트 마이닝 배치): new / has-card / known-legacy 분류 |
 | `akg db pending` | 아직 Anki 앱으로 푸시되지 않고 대기 중인 카드 목록 조회 |
@@ -163,7 +168,7 @@ alias akg='uv run anki-gen'
 | `akg legacy retire-word "単語"` | "이미 충분히 알고 있는 단어"로 지정하여 수동으로 학습 대상에서 제외(retire) |
 | `akg legacy retired-list` / `coverage` | 학습 제외(retire) 이력 조회 / 예문 노출 커버리지 리포트 출력 (Anki 앱 실행 불필요) |
 
-`run`, `snapshot`, `archive-duplicates`, `practice check`/`log`/`add-confusion`/`dismiss`/`resolve-confusion`, `rescue capture`/`edit`/`retire` 등의 기타 명령어들은 에이전트가 대화 중에 상황에 맞춰 내부적으로 실행하므로, 사용자가 직접 입력할 일은 거의 없습니다.
+`run`, `snapshot`, `archive-duplicates`, `practice check`/`log`/`add-confusion`/`dismiss`/`resolve-confusion`, `rescue capture`/`edit`/`retire`/`clear-flag` 등의 기타 명령어들은 에이전트가 대화 중에 상황에 맞춰 내부적으로 실행하므로, 사용자가 직접 입력할 일은 거의 없습니다.
 
 ## 8. 증상별 문제 해결 가이드
 

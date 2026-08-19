@@ -92,7 +92,11 @@ recognition cards into their decks, and refreshes the mirror. When Anki is unava
 and mirror export; a later online run drains the backlog.
 
 A generation-only machine sets `ANKI_ENABLED=0`. It never attempts Anki operations and
-shares work through the private data repository. On a new Anki machine, sync AnkiWeb before
+shares work through the private data repository. `ANKI_PUSH_ENABLED=0` is the narrower
+form for a machine that *has* Anki and uses it — rescue triage, in-place edits, retire,
+clear-flag, deck routing all still run — but closes the push path: no note is created and,
+because TTS runs at push time, no audio is synthesized. Cards persist and stay pending for
+a machine that pushes. On a new Anki machine, sync AnkiWeb before
 the first push so the existing note-model identity is adopted safely.
 
 ## Documentation contract

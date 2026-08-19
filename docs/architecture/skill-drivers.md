@@ -91,5 +91,15 @@ retire (the shared archive primitive). Regeneration and promoting an unknown exa
 delegated to the card-generation and legacy-migration skills; the driver only records that the
 action was taken. See [ADR-0012](../decisions/0012-in-place-card-edits.md).
 
+Clearing a flag closes the loop: a treated card keeps resurfacing until the signal the queue
+selected on is retired. `clear-flag` is a dry run by default and works **per card**, since one
+note's recognition and recall cards carry their own flags and only the flagged one was
+triaged. Sourcing deliberately covers flags 1-6 only — flag 7 is the user's out-of-band marker
+for a pipeline defect (bad TTS on an otherwise sound card) rather than a study failure, so it
+never enters the diagnosis loop, though `clear-flag` still clears it when named. The write goes
+through `anki_connector.clear_card_flags`, which sets the raw `flags` column (AnkiConnect
+exposes no flag action), preserves the non-flag bits, and re-reads the cards afterwards because
+a wrong value type is accepted with a cheerful `[True]` and changes nothing.
+
 Command syntax and session recipes belong in `anki-gen --help` and the corresponding
 `SKILL.md`, not in this architecture document.
