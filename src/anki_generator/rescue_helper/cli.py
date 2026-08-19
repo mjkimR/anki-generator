@@ -2,7 +2,7 @@ import click
 
 from anki_generator.common import emit, db_option
 from .core import (cmd_rescue_queue, cmd_capture_feedback, cmd_edit_card,
-                   cmd_retire_card, CATEGORIES, ACTIONS)
+                   cmd_retire_card, cmd_clear_flags, CATEGORIES, ACTIONS, ALL_FLAGS)
 
 @click.group(name="rescue",
              help="Leech/flag rescue: inspect struggling AnkiGen cards, capture the failure "
@@ -59,3 +59,18 @@ def rescue_edit(root_id, front, reading, meaning, tip, sense, db):
 @db_option
 def rescue_retire(root_id, category, detail, sense, db):
     emit(*cmd_retire_card(root_id, category=category, detail=detail, sense=sense, db_path=db))
+
+@rescue_group.command(name="clear-flag",
+                      help="Clear the Anki triage flag off diagnosed cards so they stop "
+                           "resurfacing in the queue. Dry run unless --confirm is passed.")
+@click.argument("root_ids", nargs=-1)
+@click.option("--all-diagnosed", is_flag=True,
+              help="Every flagged card whose root_id already has a card_feedback row")
+@click.option("--flag", type=click.Choice([str(n) for n in ALL_FLAGS]), default=None,
+              help="Clear only this flag number (7 is the special-case marker)")
+@click.option("--confirm", is_flag=True,
+              help="Apply. Without it the command only reports what would be cleared.")
+@db_option
+def rescue_clear_flag(root_ids, all_diagnosed, flag, confirm, db):
+    emit(*cmd_clear_flags(root_ids=root_ids, all_diagnosed=all_diagnosed,
+                          flag=int(flag) if flag else None, confirm=confirm, db_path=db))

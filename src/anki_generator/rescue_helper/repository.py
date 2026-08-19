@@ -39,6 +39,14 @@ def cards_by_note_ids(conn, note_ids):
     return rows
 
 
+def diagnosed_root_ids(conn):
+    """Every root_id that already carries a harvested diagnosis. `clear-flag --all-diagnosed`
+    selects on it: a flag is the queue's input signal, so retiring one is only safe once the
+    card's failure is on record."""
+    return [row[0] for row in conn.execute(
+        "SELECT DISTINCT root_id FROM card_feedback").fetchall()]
+
+
 def insert_card_feedback(conn, fb_uuid, root_id, category, detail, action):
     """Append one harvested diagnosis. The table is append-only and keyed on a
     device-independent uuid, exactly like attempts, so the mirror merges monotonically."""

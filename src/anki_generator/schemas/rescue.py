@@ -48,3 +48,19 @@ class CmdRetireCardResponse(TypedDict, total=False):
     suspended_cards: int
     backup: BackupResult
     message: str
+
+class ClearedCardInfo(TypedDict, total=False):
+    root_id: str
+    card_id: int
+    note_id: int
+    deck: str                    # which template's card carried the flag (vocab / listening)
+    flag: int                    # the flag number found, before clearing
+
+class CmdClearFlagsResponse(TypedDict, total=False):
+    status: Literal["done", "planned", "error"]   # "planned" is the dry run
+    cleared: int                 # cards whose flag was cleared AND verified cleared
+    notes: int                   # distinct notes those cards belong to (the card/note split)
+    cards: list[ClearedCardInfo]
+    unmatched: list[str]         # named root_ids that carried no flagged card
+    still_flagged: list[int]     # cards the verification found still flagged
+    message: str

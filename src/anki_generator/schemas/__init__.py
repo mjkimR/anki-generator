@@ -60,6 +60,8 @@ from .rescue import (
     CmdCaptureFeedbackResponse,
     CmdEditCardResponse,
     CmdRetireCardResponse,
+    ClearedCardInfo,
+    CmdClearFlagsResponse,
 )
 
 __all__ = [
@@ -116,4 +118,6 @@ __all__ = [
     "CmdCaptureFeedbackResponse",
     "CmdEditCardResponse",
     "CmdRetireCardResponse",
+    "ClearedCardInfo",
+    "CmdClearFlagsResponse",
 ]

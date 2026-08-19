@@ -16,7 +16,8 @@ from anki_generator import anki_connector
 from anki_generator import db_helper
 from anki_generator.db_helper import export_practice_data
 from anki_generator.rescue_helper import (
-    cmd_rescue_queue, cmd_capture_feedback, cmd_edit_card, cmd_retire_card)
+    cmd_rescue_queue, cmd_capture_feedback, cmd_edit_card, cmd_retire_card,
+    cmd_clear_flags)
 from tests.db_support import open_test_db
 
 
@@ -34,6 +35,12 @@ def seed_card(db, root_id, **kw):
     conn.commit()
     conn.close()
 
+
+def patch_anki(monkeypatch, fake):
+    """The rescue driver calls `anki_connector.invoke`, the shared flag primitive calls the
+    one in `anki_connector.core` — patch both so no test can reach a live collection."""
+    monkeypatch.setattr(anki_connector, "invoke", fake)
+    monkeypatch.setattr(anki_connector.core, "invoke", fake)
 
 # --- sourcing (leech / flag / high-lapse) ---
 
@@ -116,7 +123,7 @@ def test_queue_survives_anki_unreachable(tmp_path, monkeypatch):
     def boom(action, **params):
         raise Exception("connection refused")
 
-    monkeypatch.setattr(anki_connector, "invoke", boom)
+    patch_anki(monkeypatch, boom)
     resp, code = cmd_rescue_queue(db_path=str(tmp_path / "t.db"))
     assert code == 0 and resp["anki_online"] is False and resp["queue"] == []
 
@@ -366,3 +373,205 @@ def test_edit_db_write_failure_after_push_returns_clean_json(tmp_path, monkeypat
     resp, code = cmd_edit_card("妥協(だきょう)", tip="new", db_path=db)
     assert code == 1 and resp["status"] == "error"
     assert "ALREADY updated" in resp["message"]           # points at the reconcile fix
+
+
+# --- closing move: clear the triage flag the queue selects on ---
+
+def test_queue_sources_triage_flags_but_not_the_special_case_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    captured = {}
+
+    def fake_invoke(action, **params):
+        if action == "findCards":
+            captured.setdefault("query", params["query"])
+            return []
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    cmd_rescue_queue(db_path=str(tmp_path / "t.db"))
+    query = captured["query"]
+    assert all(f"flag:{n}" in query for n in (1, 2, 3, 4, 5, 6))
+    # 7 is the user's out-of-band marker for pipeline defects, not a study-failure signal.
+    assert "flag:7" not in query
+
+
+def flag_invoke(cards, state=None):
+    """A fake AnkiConnect over a fixed set of flagged cards: findCards/cardsInfo read it,
+    setSpecificValueOfCard writes it — enough to exercise the whole clear path."""
+    state = state if state is not None else {c["cardId"]: c["flags"] for c in cards}
+
+    def fake_invoke(action, **params):
+        if action == "findCards":
+            return [c["cardId"] for c in cards if state[c["cardId"]]]
+        if action == "cardsInfo":
+            return [dict(c, flags=state[c["cardId"]])
+                    for c in cards if c["cardId"] in params["cards"]]
+        if action == "setSpecificValueOfCard":
+            state[params["card"]] = params["newValues"][0]
+            return [True]
+        raise AssertionError(f"unexpected action {action}")
+
+    return fake_invoke, state
+
+
+def flag_card(card_id, note_id, flag, root_id, deck="Japanese::Vocabulary"):
+    return {"cardId": card_id, "note": note_id, "flags": flag, "deckName": deck,
+            "fields": {"RootId": {"value": root_id}}}
+
+
+def test_clear_flag_dry_run_reports_the_cards_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([flag_card(11, 101, 1, "妥協(だきょう)")])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], db_path=db)
+    assert code == 0 and resp["status"] == "planned" and resp["cleared"] == 0
+    assert resp["cards"][0]["card_id"] == 11 and resp["cards"][0]["flag"] == 1
+    assert state[11] == 1                                   # nothing was written
+
+
+def test_clear_flag_confirm_clears_and_counts_the_note_split(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    # One note, both of its cards flagged — two cards, one note.
+    fake, state = flag_invoke([
+        flag_card(11, 101, 1, "妥協(だきょう)"),
+        flag_card(12, 101, 3, "妥協(だきょう)", deck="Japanese::Listening")])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["status"] == "done"
+    assert resp["cleared"] == 2 and resp["notes"] == 1
+    assert state == {11: 0, 12: 0}
+
+
+def test_clear_flag_leaves_the_unflagged_sibling_card_alone(tmp_path, monkeypatch):
+    # One note carries a recognition and a recall card; the user flags whichever failed, so
+    # clearing is per card — the sibling's own (absent) signal is not the target.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([
+        flag_card(11, 101, 0, "妥協(だきょう)"),
+        flag_card(12, 101, 7, "妥協(だきょう)", deck="Japanese::Listening")])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and [c["card_id"] for c in resp["cards"]] == [12]
+    assert resp["cleared"] == 1 and resp["notes"] == 1
+
+
+def test_clear_flag_narrows_to_one_flag_number(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    seed_card(db, "大筋(おおすじ)", note_id=102)
+    fake, state = flag_invoke([
+        flag_card(11, 101, 7, "妥協(だきょう)"),
+        flag_card(12, 102, 1, "大筋(おおすじ)")])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)", "大筋(おおすじ)"], flag=7,
+                                 confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 1
+    assert state == {11: 0, 12: 1}                          # the red flag is untouched
+
+
+def test_clear_flag_all_diagnosed_only_touches_recorded_root_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    seed_card(db, "大筋(おおすじ)", note_id=102)
+    cmd_capture_feedback("妥協(だきょう)", "reading", db_path=db)
+    fake, state = flag_invoke([
+        flag_card(11, 101, 1, "妥協(だきょう)"),
+        flag_card(12, 102, 1, "大筋(おおすじ)")])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(all_diagnosed=True, confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 1
+    assert state == {11: 0, 12: 1}          # the undiagnosed card keeps its flag
+
+
+def test_clear_flag_falls_back_to_the_note_id_join(tmp_path, monkeypatch):
+    # A note pushed before the RootId field existed still resolves through the DB join.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([flag_card(11, 101, 1, "")])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 1 and state == {11: 0}
+
+
+def test_clear_flag_reports_root_ids_that_carried_no_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    fake, _ = flag_invoke([])
+    patch_anki(monkeypatch, fake)
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 0
+    assert resp["unmatched"] == ["妥協(だきょう)"]
+
+
+def test_clear_flag_requires_a_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    resp, code = cmd_clear_flags(db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "at least one root_id" in resp["message"]
+
+
+def test_clear_flag_is_gated_on_generation_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
+    resp, code = cmd_clear_flags(root_ids=["A(あ)"], db_path=str(tmp_path / "t.db"))
+    assert code == 1 and resp["status"] == "error"
+
+
+def test_clear_flag_refused_when_anki_is_unreachable(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+
+    def boom(action, **params):
+        raise Exception("connection refused")
+
+    patch_anki(monkeypatch, boom)
+    resp, code = cmd_clear_flags(root_ids=["A(あ)"], db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "not reachable" in resp["message"]
+
+
+def test_clear_flag_surfaces_writes_that_did_not_take(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+
+    def stubborn(action, **params):
+        if action == "findCards":
+            return [11]
+        if action == "cardsInfo":
+            return [flag_card(11, 101, 1, "妥協(だきょう)")]
+        if action == "setSpecificValueOfCard":
+            return [True]                       # AnkiConnect's cheerful lie
+        raise AssertionError(f"unexpected action {action}")
+
+    patch_anki(monkeypatch, stubborn)
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 0 and resp["still_flagged"] == [11]
+    assert "still carry a flag" in resp["message"]
+
+
+def test_triage_still_runs_when_only_the_push_path_is_closed(tmp_path, monkeypatch):
+    # ANKI_PUSH_ENABLED=0 closes note *creation*, not the collection: rescue is the whole
+    # point of leaving Anki reachable on such a machine, so an in-place edit still lands.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    monkeypatch.setattr(config, "ANKI_PUSH_ENABLED", False)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", back_tip="", note_id=57)
+    pushed = {}
+    monkeypatch.setattr(anki_connector, "update_note_fields",
+                        lambda nid, fields: pushed.update(note_id=nid, fields=fields))
+    resp, code = cmd_edit_card("妥協(だきょう)", tip="음독: きょう", db_path=db)
+    assert code == 0 and resp["anki_updated"] is True
+    assert pushed["note_id"] == 57

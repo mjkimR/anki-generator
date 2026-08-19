@@ -11,6 +11,9 @@ diagnosis, then applies one explicit treatment. The mechanical treatments live h
   history is preserved. A card not yet synced is edited DB-only and rides the next push.
 - **retire** — reuse `anki_connector.archive_notes` (suspend + `ankigen-retired` tag);
   reversible, review history preserved.
+- **clear-flag** — the closing move: retire the very signal the queue selects on, per card
+  (not per note — one note's two cards carry their own flags), verified against Anki because
+  the underlying write silently no-ops on a wrong value type.
 
 The diagnosis itself is captured into `card_feedback` (the harvest — this module is that
 table's first writer). The **regenerate** and **promote-word** treatments need no code here:
@@ -25,8 +28,17 @@ from anki_generator import db_helper, config
 from anki_generator.common import log, generation_only_error
 from anki_generator.schemas import (
     CmdRescueQueueResponse, CmdCaptureFeedbackResponse, CmdEditCardResponse,
-    CmdRetireCardResponse)
+    CmdRetireCardResponse, CmdClearFlagsResponse)
 from . import repository
+
+# Anki's triage flags: 1-4 are the classic colours, 5-6 (pink, turquoise) arrived in Anki
+# 2.1.45. Flag 7 (purple) is deliberately NOT one of them — it is the user's out-of-band
+# marker for special cases: a pipeline defect such as bad TTS on an otherwise fine card,
+# not a study failure. Sourcing it would file pipeline defects as failure diagnoses in
+# card_feedback and poison the harvest. `clear-flag` still clears it when named explicitly.
+TRIAGE_FLAGS = (1, 2, 3, 4, 5, 6)
+SPECIAL_CASE_FLAG = 7
+ALL_FLAGS = (*TRIAGE_FLAGS, SPECIAL_CASE_FLAG)
 
 # The failure diagnosis and the treatment applied — small, enforced taxonomies so the
 # harvested card_feedback rows stay queryable instead of drifting into free text.
@@ -70,7 +82,8 @@ def _collect_anki_signals(min_lapses):
         from anki_generator import anki_connector
         from anki_generator.anki_connector.core import _chunked
         model = config.ANKI_NOTE_MODEL
-        query = (f'"note:{model}" (tag:leech OR flag:1 OR flag:2 OR flag:3 OR flag:4'
+        flags = " OR ".join(f"flag:{n}" for n in TRIAGE_FLAGS)
+        query = (f'"note:{model}" (tag:leech OR {flags}'
                  f' OR prop:lapses>={min_lapses})')
         card_ids = anki_connector.invoke("findCards", query=query)
         leech_ids = set(anki_connector.invoke(
@@ -272,6 +285,107 @@ def cmd_edit_card(root_id, front=None, reading=None, meaning=None, tip=None,
     if note:
         response["note"] = note
     return cast(CmdEditCardResponse, response), 0
+
+
+# --- closing move: clear the triage flag the queue selects on ---
+
+def _flagged_cards():
+    """Every flagged AnkiGen card as {card_id, note_id, flag, deck, root_id}. Unlike the queue
+    this covers all seven flags: clearing is always an explicit, named request, so it must be
+    able to reach the reserved special-case flag too."""
+    from anki_generator import anki_connector
+    from anki_generator.anki_connector.core import _chunked
+    flags = " OR ".join(f"flag:{n}" for n in ALL_FLAGS)
+    card_ids = anki_connector.invoke(
+        "findCards", query=f'"note:{config.ANKI_NOTE_MODEL}" ({flags})')
+    cards = []
+    for chunk in _chunked(card_ids):
+        for info in anki_connector.invoke("cardsInfo", cards=chunk):
+            cards.append({"card_id": info.get("cardId"), "note_id": info.get("note"),
+                          "flag": info.get("flags", 0) or 0,
+                          "deck": info.get("deckName", ""), "root_id": _root_id_of(info)})
+    return cards
+
+
+def cmd_clear_flags(root_ids=(), all_diagnosed=False, flag=None, confirm=False,
+                    db_path=None) -> tuple[CmdClearFlagsResponse, int]:
+    """Clear the Anki triage flag off named cards — the move that closes a rescue session, so a
+    diagnosed card stops resurfacing in every later queue.
+
+    Selection is **per card, not per note**: one note carries both a recognition and a recall
+    card and the user flags whichever one failed, so clearing the other card's flag would erase
+    a signal that was never triaged. Naming a root_id is an explicit instruction and clears
+    every flag under it; `--all-diagnosed` is the bulk path and is therefore narrowed to
+    root_ids that already have a card_feedback row. Dry run by default, like `delete-card`:
+    flags are the user's own annotations, so the command shows what it would clear first."""
+    error = generation_only_error("generation-only machine (ANKI_ENABLED=0) — clear flags on "
+                                  "the Anki machine")
+    if error:
+        return cast(tuple[CmdClearFlagsResponse, int], error)
+    named = [r.strip() for r in root_ids if r and r.strip()]
+    if not named and not all_diagnosed:
+        return cast(CmdClearFlagsResponse, {
+            "status": "error",
+            "message": "name at least one root_id, or pass --all-diagnosed"}), 1
+    if flag is not None and flag not in ALL_FLAGS:
+        return cast(CmdClearFlagsResponse, {
+            "status": "error",
+            "message": f"--flag must be one of {', '.join(str(n) for n in ALL_FLAGS)}"}), 1
+
+    wanted = set(named)
+    if all_diagnosed:
+        with db_helper.connection(db_path) as conn:
+            wanted |= set(repository.diagnosed_root_ids(conn))
+    try:
+        cards = _flagged_cards()
+    except Exception as e:
+        log(f"[Rescue] flag clear refused, Anki unreachable: {e}")
+        return cast(CmdClearFlagsResponse, {
+            "status": "error",
+            "message": f"Anki is not reachable — open Anki to clear flags: {e}"}), 1
+
+    # A note pushed before the RootId field existed carries no root_id of its own; fall back to
+    # the note-id join the queue uses so those cards stay selectable.
+    unlinked = [c["note_id"] for c in cards if not c["root_id"] and c["note_id"]]
+    if unlinked:
+        with db_helper.connection(db_path) as conn:
+            by_note = {row[_NOTE_ID]: row[_ROOT_ID]
+                       for row in repository.cards_by_note_ids(conn, unlinked)}
+        for card in cards:
+            if not card["root_id"]:
+                card["root_id"] = by_note.get(card["note_id"], "")
+
+    targets = [c for c in cards
+               if c["root_id"] in wanted and (flag is None or c["flag"] == flag)]
+    unmatched = sorted(set(named) - {c["root_id"] for c in targets})
+    if not targets:
+        return cast(CmdClearFlagsResponse, {
+            "status": "done", "cleared": 0, "notes": 0, "cards": [],
+            "unmatched": unmatched,
+            "message": "no flagged card matches — nothing to clear"}), 0
+    notes = len({c["note_id"] for c in targets})
+    if not confirm:
+        return cast(CmdClearFlagsResponse, {
+            "status": "planned", "cleared": 0, "notes": notes, "cards": targets,
+            "unmatched": unmatched,
+            "message": f"Dry run: {len(targets)} card(s) across {notes} note(s) would have "
+                       "their flag cleared. Re-run with --confirm to apply."}), 0
+
+    try:
+        from anki_generator import anki_connector
+        cleared, still_flagged = anki_connector.clear_card_flags(
+            [c["card_id"] for c in targets])
+    except Exception as e:
+        return cast(CmdClearFlagsResponse, {
+            "status": "error", "message": f"Anki flag write failed: {e}"}), 1
+    response = {"status": "done", "cleared": len(cleared), "notes": notes,
+                "cards": targets, "unmatched": unmatched}
+    if still_flagged:
+        # The write is verified, not trusted: report the survivors instead of claiming success.
+        response["still_flagged"] = still_flagged
+        response["message"] = (f"{len(still_flagged)} card(s) still carry a flag after the "
+                               "write — clear those in the Anki browser")
+    return cast(CmdClearFlagsResponse, response), 0
 
 
 # --- treatment: retire (reuse the reversible archive primitive) ---

@@ -35,11 +35,16 @@ user asks to work through their leeches, flagged cards, or a word they "keep get
 uv run anki-gen rescue queue
 ```
 
-Returns cards that are **leeching**, **flagged (1–4)**, or **high-lapse** (`--min-lapses`,
+Returns cards that are **leeching**, **flagged (1–6)**, or **high-lapse** (`--min-lapses`,
 default 4), leeches first, joined to their local content (`front`, `back_reading`,
 `back_meaning`, `back_tip`, `is_hyogai`) plus the Anki signals (`lapses`, `flags`,
 `is_leech`). `anki_online: false` with a message just means Anki is closed or this is a
 generation-only machine — that's normal; there's simply nothing to triage right now.
+
+**Flag 7 (purple) is not in the queue on purpose.** The user reserves it for cards with a
+*pipeline* defect — bad TTS on an otherwise sound card, say — not a study failure. Never
+diagnose one as a rescue case; if the user asks about purple cards, treat the underlying
+defect and clear the flag with `rescue clear-flag <root_id> --flag 7 --confirm`.
 
 Work **one card at a time**, top of the queue first.
 
@@ -69,6 +74,8 @@ Two treatments are mechanical here; two are delegated to the skill that owns the
 | **Register a confusion pair** | `uv run anki-gen practice add-confusion <a> <b> --source flag-harvest` | `add-confusion` |
 | **Retire** the card | `rescue retire <root_id> --category <cat>` | `retire` |
 
+(Clearing the flag afterwards is Step 5, not a treatment — every treated card gets it.)
+
 `rescue edit` changes the DB + JSONL mirror and pushes the live Anki note in place (no
 re-queue, no lost review history). Keep the `*target*` marker in `--front`/`--meaning`. When a
 `root_id` has multiple senses the command lists them and asks for `--sense "<current front>"`.
@@ -86,7 +93,25 @@ uv run anki-gen rescue capture <root_id> <category> --detail "…" --action <lab
 
 This is the **harvest**: over time `card_feedback` shows which categories dominate and which
 treatments were tried, so recurring weaknesses become visible instead of vanishing after each
-fix. Then return to Step 1 for the next card.
+fix.
+
+### [Step 5] Clear the flag you just triaged
+
+```
+uv run anki-gen rescue clear-flag <root_id>            # dry run: shows what it would clear
+uv run anki-gen rescue clear-flag <root_id> --confirm  # apply
+```
+
+A flag is the queue's *input* signal, so a treated card keeps resurfacing until the flag comes
+off. Clear it once the diagnosis is captured and the treatment applied — that closes the card.
+Dry run by default (flags are the user's own annotations); `--all-diagnosed` clears every
+flagged card that already has a `card_feedback` row, for closing out a whole session at once.
+
+Clearing is **per card, not per note**: one note carries a recognition and a recall card, and
+only the one the user actually flagged is cleared. The response reports the card/note split,
+and re-reads the cards to confirm the write — `cleared` counts verified clears only.
+
+Then return to Step 1 for the next card.
 
 ---
 
