@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import cast
 
 from anki_generator import config
+from anki_generator.common import push_block_reason
 from anki_generator.schemas import CmdRunResponse, DbInsertResult, BackupResult
 from anki_generator import (
     anki_connector, db_helper, validator
@@ -96,10 +97,15 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
         card["status"] = "persisted"
     save_json(path, data)
 
-    # config.ANKI_ENABLED is read through the module (not a copied import) so tests and
-    # per-machine .env can flip it and this branch sees the change.
-    if config.ANKI_ENABLED:
+    # The switches are read through the config module (not copied imports) so tests and
+    # per-machine .env can flip them and this branch sees the change. A closed push path
+    # is reported exactly like Anki being offline: cards stay pending, nothing is
+    # synthesized, and the next pushing machine drains them.
+    push_block = push_block_reason()
+    if push_block is None:
         anki_online, model_name, anki_error = connect_anki(deck_name)
+    elif config.ANKI_ENABLED:
+        anki_online, model_name, anki_error = False, None, "push disabled (ANKI_PUSH_ENABLED=0)"
     else:
         anki_online, model_name, anki_error = False, None, "disabled (ANKI_ENABLED=0)"
     synced_count = duplicate_count = 0
@@ -178,6 +184,12 @@ def cmd_run(file_path, deck_name, db_path=None) -> tuple[CmdRunResponse, int]:
                                  "Committing data/ is all that's needed here; an "
                                  "Anki-equipped machine will sync (and synthesize audio) "
                                  "on its next run.")
+        elif not config.ANKI_PUSH_ENABLED:
+            result["message"] = ("Cards are persisted to the DB and mirrored under data/ — "
+                                 "card push is disabled on this machine "
+                                 "(ANKI_PUSH_ENABLED=0), so no audio was synthesized "
+                                 "either. They stay pending; commit data/ here and let a "
+                                 "pushing machine drain them.")
         else:
             result["message"] = ("Cards are persisted to the local DB but NOT yet in Anki "
                                  "(app offline). Tell the user to open Anki, then run "

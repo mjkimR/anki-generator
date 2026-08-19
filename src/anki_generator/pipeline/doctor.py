@@ -29,9 +29,11 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
     except Exception as e:
         add("joyokanji", False, str(e))
 
-    if not config.ANKI_ENABLED:
-        add("tts_provider", True,
-            f"{config.TTS_PROVIDER} (deferred; ANKI_ENABLED=0)")
+    if not config.push_enabled():
+        # TTS runs at push time, so a machine that never pushes never synthesizes: the
+        # provider's configuration is somebody else's problem, not a finding here.
+        switch = "ANKI_ENABLED=0" if not config.ANKI_ENABLED else "ANKI_PUSH_ENABLED=0"
+        add("tts_provider", True, f"{config.TTS_PROVIDER} (deferred; {switch})")
     else:
         try:
             provider = core.tts_helper.resolve_provider()
@@ -221,6 +223,11 @@ def cmd_doctor(db_path=None) -> tuple[CmdDoctorResponse, int]:
     if not config.ANKI_ENABLED:
         add("anki_connect", True, "disabled (ANKI_ENABLED=0) — generation-only machine")
         return _doctor_result(checks)
+
+    if not config.ANKI_PUSH_ENABLED:
+        # Anki is still reachable here for triage; only note creation is off.
+        add("anki_push", True, "disabled (ANKI_PUSH_ENABLED=0) — cards persist and stay "
+                               "pending for a machine that pushes")
 
     try:
         anki_connector.invoke("deckNames")

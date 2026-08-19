@@ -7,7 +7,7 @@ from anki_generator.schemas import (
 from anki_generator import (
     anki_connector, db_helper, tts_helper
 )
-from anki_generator.common import generation_only_error
+from anki_generator.common import generation_only_error, push_disabled_error
 from anki_generator import config
 from .core import (
     connect_anki, _ensure_local_audio, export_backup, _route_listening,
@@ -32,8 +32,7 @@ def _drain_deletions(deletions, db_path=None):
 
 
 def cmd_sync_pending(deck_name, db_path=None) -> tuple[CmdSyncPendingResponse, int]:
-    error = generation_only_error("This machine is generation-only (ANKI_ENABLED=0) — "
-                                  "run sync-pending on an Anki-equipped machine instead.")
+    error = push_disabled_error("run sync-pending on a machine that pushes instead.")
     if error:
         return error
     pending = db_helper.fetch_pending(db_path=db_path)
@@ -168,8 +167,7 @@ def cmd_sync_decks(deck_name, db_path=None) -> tuple[CmdSyncDecksResponse, int]:
             "message": " ".join(parts)}, 0
 
 def cmd_backfill_audio(db_path=None, force: bool = False) -> tuple[CmdBackfillResponse, int]:
-    error = generation_only_error("This machine is generation-only (ANKI_ENABLED=0) — "
-                                  "run backfill-audio on an Anki-equipped machine instead.")
+    error = push_disabled_error("run backfill-audio on a machine that pushes instead.")
     if error:
         return error
     missing = db_helper.fetch_missing_audio(db_path=db_path, force=force)

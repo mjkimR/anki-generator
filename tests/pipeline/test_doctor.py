@@ -279,3 +279,22 @@ def test_doctor_accepts_valid_skill_symlink(tmp_path, monkeypatch):
     result, _ = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
     check = next(c for c in result["checks"] if c["check"] == "skill_symlink")
     assert check["ok"] is True
+
+def test_doctor_reports_push_disabled_and_defers_tts(tmp_path, monkeypatch):
+    # ANKI_PUSH_ENABLED=0 leaves Anki itself in scope (still checked, still reported), but
+    # the provider check is deferred: a machine that never pushes never synthesizes.
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "ANKI_PUSH_ENABLED", False)
+    monkeypatch.setattr(config, "TTS_PROVIDER", "azure")  # unconfigured here on purpose
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    link_skills(tmp_path)
+    fake_anki_offline(monkeypatch)
+
+    result, code = pipeline.cmd_doctor(db_path=str(tmp_path / "test.db"))
+    assert code == 0
+    push = next(c for c in result["checks"] if c["check"] == "anki_push")
+    assert push["ok"] is True and "ANKI_PUSH_ENABLED=0" in push["detail"]
+    tts = next(c for c in result["checks"] if c["check"] == "tts_provider")
+    assert tts["ok"] is True and "deferred; ANKI_PUSH_ENABLED=0" in tts["detail"]
+    # The Anki checks still run — this machine talks to Anki for triage.
+    assert any(c["check"] == "anki_connect" for c in result["checks"])

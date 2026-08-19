@@ -309,3 +309,44 @@ def test_generation_only_blocks_sync_and_backfill(tmp_path, monkeypatch):
     assert code == 1 and "generation-only" in result["message"]
     result, code = pipeline.cmd_backfill_audio(db_path=str(tmp_path / "t.db"))
     assert code == 1 and "generation-only" in result["message"]
+
+def test_push_disabled_run_persists_without_touching_anki_or_tts(tmp_path, monkeypatch):
+    # ANKI_PUSH_ENABLED=0 is the narrower switch: Anki may well be running on this machine
+    # and stays usable for triage, but no note is created here — and since TTS happens at
+    # push time, nothing is synthesized either.
+    db = str(tmp_path / "test.db")
+    patch_backup(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "ANKI_PUSH_ENABLED", False)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("no Anki/TTS work expected when the push path is closed")
+    monkeypatch.setattr(pipeline.tts_helper, "synthesize", boom)
+    monkeypatch.setattr(pipeline.anki_connector.core, "invoke", boom)
+    monkeypatch.setattr(pipeline.anki_connector, "invoke", boom)
+    path = write_file(tmp_path, [make_japanese_card(back_meaning="타협")])
+
+    result, code = pipeline.cmd_run(str(path), "TestDeck", db_path=db)
+    assert code == 0
+    assert result["status"] == "done"
+    assert result["anki_online"] is False
+    assert "ANKI_PUSH_ENABLED=0" in result["message"]
+    # Persisted as pending and silent — the pushing machine synthesizes later.
+    pending = db_helper.fetch_pending(db_path=db)
+    assert len(pending) == 1 and pending[0]["audio_path"] == ""
+    assert not path.exists()  # archived as usual
+    assert result["backup"]["total_cards"] == 1  # JSONL mirror refreshed
+
+def test_push_disabled_blocks_sync_and_backfill(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_PUSH_ENABLED", False)
+    result, code = pipeline.cmd_sync_pending("TestDeck", db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "ANKI_PUSH_ENABLED=0" in result["message"]
+    result, code = pipeline.cmd_backfill_audio(db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "ANKI_PUSH_ENABLED=0" in result["message"]
+
+def test_generation_only_wins_over_the_push_switch(tmp_path, monkeypatch):
+    # Both closed: the message names the machine-level reason, not the narrower one.
+    monkeypatch.setattr(config, "ANKI_ENABLED", False)
+    monkeypatch.setattr(config, "ANKI_PUSH_ENABLED", True)
+    result, code = pipeline.cmd_sync_pending("TestDeck", db_path=str(tmp_path / "t.db"))
+    assert code == 1 and "generation-only" in result["message"]
+    assert config.push_enabled() is False

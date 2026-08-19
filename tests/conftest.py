@@ -39,6 +39,11 @@ def isolate_config_paths(tmp_path, monkeypatch):
     # Most tests exercise orchestration without Azure credentials. Provider-specific
     # tests override this explicitly; production defaults to fail-closed Azure.
     monkeypatch.setattr(config, "TTS_PROVIDER", "edge")
+    # Same reasoning for the per-machine Anki switches (.env, gitignored): a machine that
+    # sets ANKI_ENABLED=0 or ANKI_PUSH_ENABLED=0 would otherwise turn every push assertion
+    # in the suite into a no-op. Tests for those modes patch them explicitly.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    monkeypatch.setattr(config, "ANKI_PUSH_ENABLED", True)
     monkeypatch.setattr(pipeline.core, "ATTEMPTS_PATH",
                         tmp_path / "cards" / "pending" / ".attempts.json")
     return tmp_path

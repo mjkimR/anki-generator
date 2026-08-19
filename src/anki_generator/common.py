@@ -61,6 +61,25 @@ def generation_only_error(message) -> tuple[Any, int] | None:
         return None
     return {"status": "error", "message": message}, 1
 
+def push_block_reason() -> str | None:
+    """Why cards cannot be pushed from this machine, phrased for a message, or None when
+    the push path is open. Two distinct closures, named separately because the fix
+    differs: no Anki on this machine at all, or Anki here with pushing deliberately off."""
+    if not config.ANKI_ENABLED:
+        return "This machine is generation-only (ANKI_ENABLED=0)"
+    if not config.ANKI_PUSH_ENABLED:
+        return "Card push is disabled on this machine (ANKI_PUSH_ENABLED=0)"
+    return None
+
+def push_disabled_error(advice) -> tuple[Any, int] | None:
+    """The gate for commands that create Anki notes (and so synthesize audio): returns the
+    error response naming which switch closed the path, otherwise None. Triage commands
+    use generation_only_error instead — they run wherever Anki itself is reachable."""
+    reason = push_block_reason()
+    if reason is None:
+        return None
+    return {"status": "error", "message": f"{reason} — {advice}"}, 1
+
 # SQLite caps bound variables per statement (SQLITE_MAX_VARIABLE_NUMBER: 999 on older builds,
 # 32766 since 3.32). A dynamic `IN (?, ?, …)` over an unbounded id list must chunk under the
 # conservative 999 or it raises "too many SQL variables". Repositories building such a clause

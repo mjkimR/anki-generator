@@ -87,6 +87,19 @@ ANKI_KANJI_DECK = os.getenv("ANKI_KANJI_DECK", "Japanese::Kanji")
 # machine — no Anki here, ever. The pipeline then skips every Anki interaction (and TTS,
 # which happens at push time) and reports that committing data/ is all that's needed.
 ANKI_ENABLED = os.getenv("ANKI_ENABLED", "1").strip().lower() not in ("0", "false", "no")
+# The narrower switch: ANKI_PUSH_ENABLED=0 keeps Anki fully usable for triage — the rescue
+# queue, in-place edits, retire, clear-flag and deck routing all still reach the live
+# collection — but closes the *push* path. No new note is created and, because TTS runs at
+# push time, nothing is synthesized either; cards persist and stay pending for a machine
+# that does push. A generation-only machine has no push path at all, so ANKI_ENABLED=0
+# implies this — ask push_enabled(), never either flag alone.
+ANKI_PUSH_ENABLED = os.getenv(
+    "ANKI_PUSH_ENABLED", "1").strip().lower() not in ("0", "false", "no")
+
+def push_enabled() -> bool:
+    """Whether this machine may create Anki notes (and therefore synthesize audio). Both
+    flags are read at call time — .env is per-machine and tests flip them per-case."""
+    return ANKI_ENABLED and ANKI_PUSH_ENABLED
 
 def resolve_aivis_api_url() -> str:
     url = os.getenv("AIVIS_API_URL", "http://127.0.0.1:10101")
