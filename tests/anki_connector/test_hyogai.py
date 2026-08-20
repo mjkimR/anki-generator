@@ -104,8 +104,8 @@ def test_hyogai_template_assets_gate_on_field():
 
 
 def test_ensure_note_model_appends_missing_tail_fields(monkeypatch):
-    """A model created before ADR-0009 misses only the hyōgai tail fields — it must be
-    upgraded in place with modelFieldAdd, never refused or recreated."""
+    """A model created before ADR-0009 misses the hyōgai tail fields and the later FlagMemo
+    field — it must be upgraded in place with modelFieldAdd, never refused or recreated."""
     added = []
     templates, css = anki_connector._load_model_assets()
 
@@ -113,7 +113,7 @@ def test_ensure_note_model_appends_missing_tail_fields(monkeypatch):
         if action == "modelNames":
             return [anki_connector.ANKI_NOTE_MODEL]
         if action == "modelFieldNames":
-            return list(anki_connector.MODEL_FIELDS[:-3])
+            return list(anki_connector.MODEL_FIELDS[:6])   # Front … RootId
         if action == "modelFieldAdd":
             added.append((params["fieldName"], params["index"]))
             return None
@@ -127,8 +127,8 @@ def test_ensure_note_model_appends_missing_tail_fields(monkeypatch):
     monkeypatch.setattr(anki_connector.core, "invoke", fake_invoke)
     anki_connector.ensure_note_model()
     n = len(anki_connector.MODEL_FIELDS)
-    assert added == [("HyogaiKanji", n - 3), ("HyogaiFront", n - 2),
-                     ("HyogaiPriority", n - 1)]
+    assert added == [("HyogaiKanji", n - 4), ("HyogaiFront", n - 3),
+                     ("HyogaiPriority", n - 2), ("FlagMemo", n - 1)]
 
 
 def test_ensure_note_model_refuses_non_prefix_layout(monkeypatch):

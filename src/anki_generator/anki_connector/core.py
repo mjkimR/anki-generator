@@ -28,8 +28,14 @@ MODEL_DIR = current_file.parent.parent / "anki_model"
 #   (push-time stem substitution; headword fallback) — the recognition card's front.
 # - HyogaiPriority: high/mid/low, rendered as a badge on the recognition front so the
 #   user weights their attention per card instead of per deck.
+# FlagMemo is the user's transient triage note, typed in Anki while flagging a struggling
+# card (why it failed). Like RootId it is rendered by no template; deliberately Anki-only
+# working state — never stored in the DB or the JSONL mirror: `rescue queue` surfaces it
+# as diagnosis evidence and `rescue clear-flag` wipes it once the note carries no flag,
+# so it has no life to preserve. The name ties it to the flag on purpose — it is not a
+# general-purpose notes field.
 MODEL_FIELDS = ("Front", "Reading", "Meaning", "Tip", "Audio", "RootId",
-                "HyogaiKanji", "HyogaiFront", "HyogaiPriority")
+                "HyogaiKanji", "HyogaiFront", "HyogaiPriority", "FlagMemo")
 
 # Card templates, in order. "Card 1" MUST stay first (ordinal 0) so the vocab cards Anki
 # already built keep their identity; new templates are only ever appended, never reordered.
@@ -245,6 +251,7 @@ def push_card(card, deck_name, model_name):
             "HyogaiKanji": headword if is_hyogai else "",
             "HyogaiFront": marker_to_html(hyogai_sentence_front(card)),
             "HyogaiPriority": priority,
+            "FlagMemo": "",
         },
         "tags": tags,
     }

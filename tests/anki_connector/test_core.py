@@ -50,6 +50,8 @@ def test_push_card_maps_structured_fields(monkeypatch):
     assert note["fields"]["Audio"] == ""
     # Unrendered link field: lets Anki-side features identify the word without the DB.
     assert note["fields"]["RootId"] == "妥協(だきょう)"
+    # The triage memo is the user's to write in Anki — a new note always starts blank.
+    assert note["fields"]["FlagMemo"] == ""
 
 def test_push_card_renders_meaning_marker(monkeypatch):
     # The *…* target marker in back_meaning gets the same highlight span as front.
