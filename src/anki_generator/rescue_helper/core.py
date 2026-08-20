@@ -13,7 +13,9 @@ diagnosis, then applies one explicit treatment. The mechanical treatments live h
   reversible, review history preserved.
 - **clear-flag** — the closing move: retire the very signal the queue selects on, per card
   (not per note — one note's two cards carry their own flags), verified against Anki because
-  the underlying write silently no-ops on a wrong value type.
+  the underlying write silently no-ops on a wrong value type. A note left flag-free also has
+  its FlagMemo field wiped: the memo is the user's note on why they flagged the card, written
+  in Anki at review time and surfaced by the queue, so it retires with the flag it explains.
 
 The diagnosis itself is captured into `card_feedback` (the harvest — this module is that
 table's first writer). The **regenerate** and **promote-word** treatments need no code here:
@@ -33,9 +35,11 @@ from . import repository
 
 # Anki's triage flags: 1-4 are the classic colours, 5-6 (pink, turquoise) arrived in Anki
 # 2.1.45. Flag 7 (purple) is deliberately NOT one of them — it is the user's out-of-band
-# marker for special cases: a pipeline defect such as bad TTS on an otherwise fine card,
-# not a study failure. Sourcing it would file pipeline defects as failure diagnoses in
-# card_feedback and poison the harvest. `clear-flag` still clears it when named explicitly.
+# special-case marker, and what each purple card means is the user's call, said per card in
+# its FlagMemo (a pipeline defect like bad TTS, a study question to research, anything).
+# Auto-sourcing it would drag those cases through the failure taxonomy into card_feedback
+# and poison the harvest, so the queue takes 1-6 by default and flag 7 rides along only on
+# explicit request (`--include-special`); `clear-flag` likewise clears it when named.
 TRIAGE_FLAGS = (1, 2, 3, 4, 5, 6)
 SPECIAL_CASE_FLAG = 7
 ALL_FLAGS = (*TRIAGE_FLAGS, SPECIAL_CASE_FLAG)
@@ -72,7 +76,16 @@ def _root_id_of(info):
     return root.get("value", "")
 
 
-def _collect_anki_signals(min_lapses):
+def _memo_of(info):
+    """The note's FlagMemo field — the user's own triage note, typed in Anki while flagging
+    the card. Anki-only working state (never in the DB or mirror, rendered by no template):
+    the queue surfaces it as diagnosis evidence, clear-flag wipes it. Empty for notes older
+    than the field."""
+    memo = (info.get("fields") or {}).get("FlagMemo") or {}
+    return (memo.get("value") or "").strip()
+
+
+def _collect_anki_signals(min_lapses, include_special=False):
     """Best-effort. Returns ({note_id: {lapses, flags:set, is_leech, root_id}}, online, msg).
     Anki closed or generation-only → ({}, False, message); never raises."""
     if not config.ANKI_ENABLED:
@@ -82,7 +95,8 @@ def _collect_anki_signals(min_lapses):
         from anki_generator import anki_connector
         from anki_generator.anki_connector.core import _chunked
         model = config.ANKI_NOTE_MODEL
-        flags = " OR ".join(f"flag:{n}" for n in TRIAGE_FLAGS)
+        sourced = ALL_FLAGS if include_special else TRIAGE_FLAGS
+        flags = " OR ".join(f"flag:{n}" for n in sourced)
         query = (f'"note:{model}" (tag:leech OR {flags}'
                  f' OR prop:lapses>={min_lapses})')
         card_ids = anki_connector.invoke("findCards", query=query)
@@ -96,7 +110,7 @@ def _collect_anki_signals(min_lapses):
                     continue
                 entry = signals.setdefault(nid, {
                     "lapses": 0, "flags": set(), "is_leech": False,
-                    "root_id": _root_id_of(info)})
+                    "root_id": _root_id_of(info), "memo": _memo_of(info)})
                 entry["lapses"] = max(entry["lapses"], info.get("lapses", 0) or 0)
                 flag = info.get("flags", 0) or 0
                 if flag:
@@ -109,12 +123,15 @@ def _collect_anki_signals(min_lapses):
         return {}, False, f"Anki unreachable: {e}"
 
 
-def cmd_rescue_queue(limit=20, min_lapses=4,
+def cmd_rescue_queue(limit=20, min_lapses=4, include_special=False,
                      db_path=None) -> tuple[CmdRescueQueueResponse, int]:
     """Surface leeching / flagged / high-lapse AnkiGen cards with their local content for
     inspection. Read-only. Anki closed / generation-only → empty queue + message, never an
-    error (Anki being offline is a normal state here)."""
-    signals, anki_online, message = _collect_anki_signals(min_lapses)
+    error (Anki being offline is a normal state here). `include_special` also sources the
+    flag-7 special-case cards — an explicit request, never the default, so the user's
+    out-of-band markers stay out of automatic triage."""
+    signals, anki_online, message = _collect_anki_signals(
+        min_lapses, include_special=include_special)
     if not anki_online:
         return cast(CmdRescueQueueResponse, {
             "status": "done", "anki_online": False, "returned": 0, "queue": [],
@@ -132,6 +149,9 @@ def cmd_rescue_queue(limit=20, min_lapses=4,
             "flags": sorted(sig["flags"]),
             "is_leech": sig["is_leech"],
         }
+        if sig["memo"]:
+            # The user's own note on why they flagged it — the strongest diagnosis evidence.
+            item["memo"] = sig["memo"]
         if row:
             item.update({"front": row[_FRONT], "back_reading": row[_READING],
                          "back_meaning": row[_MEANING], "back_tip": row[_TIP],
@@ -303,8 +323,19 @@ def _flagged_cards():
         for info in anki_connector.invoke("cardsInfo", cards=chunk):
             cards.append({"card_id": info.get("cardId"), "note_id": info.get("note"),
                           "flag": info.get("flags", 0) or 0,
-                          "deck": info.get("deckName", ""), "root_id": _root_id_of(info)})
+                          "deck": info.get("deckName", ""), "root_id": _root_id_of(info),
+                          "memo": _memo_of(info)})
     return cards
+
+
+def _memo_notes_to_wipe(targets, cards, surviving_ids):
+    """The memo travels with the flag: it is the user's note on WHY the card was flagged, so
+    once its note carries no flagged card any more it has served its purpose. Notes are wiped
+    only when fully un-flagged — a sibling card keeping its flag (a `--flag` narrowing, a
+    failed write) keeps the triage open and the memo with it."""
+    open_notes = {c["note_id"] for c in cards if c["card_id"] in surviving_ids}
+    return sorted({c["note_id"] for c in targets
+                   if c["memo"] and c["note_id"]} - open_notes)
 
 
 def cmd_clear_flags(root_ids=(), all_diagnosed=False, flag=None, confirm=False,
@@ -317,7 +348,10 @@ def cmd_clear_flags(root_ids=(), all_diagnosed=False, flag=None, confirm=False,
     a signal that was never triaged. Naming a root_id is an explicit instruction and clears
     every flag under it; `--all-diagnosed` is the bulk path and is therefore narrowed to
     root_ids that already have a card_feedback row. Dry run by default, like `delete-card`:
-    flags are the user's own annotations, so the command shows what it would clear first."""
+    flags are the user's own annotations, so the command shows what it would clear first.
+
+    Clearing also wipes the FlagMemo field of every note the clear leaves flag-free — see
+    `_memo_notes_to_wipe` for why the memo's lifecycle is the flag's."""
     error = generation_only_error("generation-only machine (ANKI_ENABLED=0) — clear flags on "
                                   "the Anki machine")
     if error:
@@ -365,11 +399,16 @@ def cmd_clear_flags(root_ids=(), all_diagnosed=False, flag=None, confirm=False,
             "message": "no flagged card matches — nothing to clear"}), 0
     notes = len({c["note_id"] for c in targets})
     if not confirm:
+        non_targets = {c["card_id"] for c in cards} - {c["card_id"] for c in targets}
+        planned_wipes = _memo_notes_to_wipe(targets, cards, non_targets)
+        message = (f"Dry run: {len(targets)} card(s) across {notes} note(s) would have "
+                   "their flag cleared. Re-run with --confirm to apply.")
+        if planned_wipes:
+            message += (f" {len(planned_wipes)} note memo(s) would be wiped with the "
+                        "flag.")
         return cast(CmdClearFlagsResponse, {
             "status": "planned", "cleared": 0, "notes": notes, "cards": targets,
-            "unmatched": unmatched,
-            "message": f"Dry run: {len(targets)} card(s) across {notes} note(s) would have "
-                       "their flag cleared. Re-run with --confirm to apply."}), 0
+            "unmatched": unmatched, "message": message}), 0
 
     try:
         from anki_generator import anki_connector
@@ -378,13 +417,35 @@ def cmd_clear_flags(root_ids=(), all_diagnosed=False, flag=None, confirm=False,
     except Exception as e:
         return cast(CmdClearFlagsResponse, {
             "status": "error", "message": f"Anki flag write failed: {e}"}), 1
+
+    # Wipe the memos of the notes that just became flag-free — computed from the VERIFIED
+    # clears, so a write that did not take also keeps its note's memo. Best-effort past the
+    # flag write: the flags are already off, so a failed wipe is reported, not fatal.
+    surviving = {c["card_id"] for c in cards} - set(cleared)
+    memos_cleared, memo_wipe_failed = 0, []
+    for note_id in _memo_notes_to_wipe(targets, cards, surviving):
+        try:
+            anki_connector.update_note_fields(note_id, {"FlagMemo": ""})
+            memos_cleared += 1
+        except Exception as e:
+            memo_wipe_failed.append(note_id)
+            log(f"[Rescue] memo wipe failed for note {note_id}: {e}")
+
     response = {"status": "done", "cleared": len(cleared), "notes": notes,
-                "cards": targets, "unmatched": unmatched}
+                "cards": targets, "unmatched": unmatched,
+                "memos_cleared": memos_cleared}
+    messages = []
     if still_flagged:
         # The write is verified, not trusted: report the survivors instead of claiming success.
         response["still_flagged"] = still_flagged
-        response["message"] = (f"{len(still_flagged)} card(s) still carry a flag after the "
-                               "write — clear those in the Anki browser")
+        messages.append(f"{len(still_flagged)} card(s) still carry a flag after the "
+                        "write — clear those in the Anki browser")
+    if memo_wipe_failed:
+        response["memo_wipe_failed"] = memo_wipe_failed
+        messages.append(f"{len(memo_wipe_failed)} note memo(s) failed to wipe — clear the "
+                        "FlagMemo field in the Anki browser")
+    if messages:
+        response["message"] = "; ".join(messages)
     return cast(CmdClearFlagsResponse, response), 0
 
 

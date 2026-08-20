@@ -7,6 +7,8 @@ class RescueCardInfo(TypedDict, total=False):
     lapses: int
     flags: list[int]             # the distinct Anki flag numbers set on the note's cards
     is_leech: bool
+    memo: str                    # the note's FlagMemo field — the user's own triage note,
+                                 # typed in Anki while flagging; present only when non-empty
     front: str                   # local card content — absent when no local row joins
     back_reading: str
     back_meaning: str
@@ -55,6 +57,8 @@ class ClearedCardInfo(TypedDict, total=False):
     note_id: int
     deck: str                    # which template's card carried the flag (vocab / listening)
     flag: int                    # the flag number found, before clearing
+    memo: str                    # the note's FlagMemo field ("" when unset) — wiped
+                                 # alongside the flag once the note carries no flagged card
 
 class CmdClearFlagsResponse(TypedDict, total=False):
     status: Literal["done", "planned", "error"]   # "planned" is the dry run
@@ -63,4 +67,6 @@ class CmdClearFlagsResponse(TypedDict, total=False):
     cards: list[ClearedCardInfo]
     unmatched: list[str]         # named root_ids that carried no flagged card
     still_flagged: list[int]     # cards the verification found still flagged
+    memos_cleared: int           # notes whose FlagMemo was wiped along with their last flag
+    memo_wipe_failed: list[int]  # notes whose flag cleared but whose memo wipe errored
     message: str

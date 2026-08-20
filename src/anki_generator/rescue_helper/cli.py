@@ -15,9 +15,13 @@ def rescue_group():
                            "for inspection (read-only; empty + message when Anki is closed)")
 @click.option("--limit", default=20, type=int)
 @click.option("--min-lapses", default=4, type=int, help="High-lapse threshold to include")
+@click.option("--include-special", is_flag=True,
+              help="Also surface flag-7 (purple) cards with their FlagMemo — the user's "
+                   "special-case markers, kept out of automatic triage by default")
 @db_option
-def rescue_queue(limit, min_lapses, db):
-    emit(*cmd_rescue_queue(limit=limit, min_lapses=min_lapses, db_path=db))
+def rescue_queue(limit, min_lapses, include_special, db):
+    emit(*cmd_rescue_queue(limit=limit, min_lapses=min_lapses,
+                           include_special=include_special, db_path=db))
 
 @rescue_group.command(name="capture",
                       help="Record a diagnosed failure category (and the treatment chosen) "

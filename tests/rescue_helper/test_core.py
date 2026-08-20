@@ -96,6 +96,35 @@ def test_queue_uses_rootid_field_when_no_local_row(tmp_path, monkeypatch):
     assert "no local card row" in item["note"]
 
 
+def test_queue_surfaces_the_users_memo(tmp_path, monkeypatch):
+    # The FlagMemo note field is the user's own note on why they flagged the card, typed in
+    # Anki at review time — the queue hands it to the agent as first-hand diagnosis evidence.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    seed_card(db, "大筋(おおすじ)", note_id=102)
+
+    def fake_invoke(action, **params):
+        if action == "findCards":
+            return [] if "flag:1" not in params["query"] else [11, 12]
+        if action == "cardsInfo":
+            info = {
+                11: {"cardId": 11, "note": 101, "lapses": 2, "flags": 1,
+                     "fields": {"RootId": {"value": "妥協(だきょう)"},
+                                "FlagMemo": {"value": "拒んだ 오독이 진짜 원인"}}},
+                12: {"cardId": 12, "note": 102, "lapses": 2, "flags": 1,
+                     "fields": {"RootId": {"value": "大筋(おおすじ)"}}},
+            }
+            return [info[c] for c in params["cards"]]
+        raise AssertionError(action)
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    resp, _ = cmd_rescue_queue(db_path=db)
+    by_root = {it["root_id"]: it for it in resp["queue"]}
+    assert by_root["妥協(だきょう)"]["memo"] == "拒んだ 오독이 진짜 원인"
+    assert "memo" not in by_root["大筋(おおすじ)"]     # empty memos stay out of the payload
+
+
 def test_cards_by_note_ids_chunks_past_sqlite_var_limit(tmp_path):
     # A large leech/flag set must not blow SQLite's bound-variable cap (~999) — the repository
     # chunks the IN-clause. The two note ids sit in the 2nd/3rd 900-wide chunks (not the first),
@@ -391,8 +420,25 @@ def test_queue_sources_triage_flags_but_not_the_special_case_flag(tmp_path, monk
     cmd_rescue_queue(db_path=str(tmp_path / "t.db"))
     query = captured["query"]
     assert all(f"flag:{n}" in query for n in (1, 2, 3, 4, 5, 6))
-    # 7 is the user's out-of-band marker for pipeline defects, not a study-failure signal.
+    # 7 is the user's out-of-band special-case marker, not a study-failure signal.
     assert "flag:7" not in query
+
+
+def test_queue_include_special_sources_flag_7_on_request(tmp_path, monkeypatch):
+    # Reviewing the special-case cards is an explicit ask — the option adds flag 7 to the
+    # sweep so their FlagMemo (which says what each one means) surfaces with them.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    captured = {}
+
+    def fake_invoke(action, **params):
+        if action == "findCards":
+            captured.setdefault("query", params["query"])
+            return []
+        raise AssertionError(f"unexpected action {action}")
+
+    monkeypatch.setattr(anki_connector, "invoke", fake_invoke)
+    cmd_rescue_queue(include_special=True, db_path=str(tmp_path / "t.db"))
+    assert "flag:7" in captured["query"]
 
 
 def flag_invoke(cards, state=None):
@@ -414,9 +460,12 @@ def flag_invoke(cards, state=None):
     return fake_invoke, state
 
 
-def flag_card(card_id, note_id, flag, root_id, deck="Japanese::Vocabulary"):
+def flag_card(card_id, note_id, flag, root_id, deck="Japanese::Vocabulary", memo=""):
+    fields = {"RootId": {"value": root_id}}
+    if memo:
+        fields["FlagMemo"] = {"value": memo}
     return {"cardId": card_id, "note": note_id, "flags": flag, "deckName": deck,
-            "fields": {"RootId": {"value": root_id}}}
+            "fields": fields}
 
 
 def test_clear_flag_dry_run_reports_the_cards_without_writing(tmp_path, monkeypatch):
@@ -560,6 +609,103 @@ def test_clear_flag_surfaces_writes_that_did_not_take(tmp_path, monkeypatch):
     resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
     assert code == 0 and resp["cleared"] == 0 and resp["still_flagged"] == [11]
     assert "still carry a flag" in resp["message"]
+
+
+# --- the memo travels with the flag: wiped when its note goes flag-free, not before ---
+
+def test_clear_flag_wipes_the_memo_with_the_notes_last_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([flag_card(11, 101, 1, "妥協(だきょう)", memo="오독 메모")])
+    patch_anki(monkeypatch, fake)
+    wiped = {}
+    monkeypatch.setattr(anki_connector, "update_note_fields",
+                        lambda nid, fields: wiped.update({nid: fields}))
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 1 and resp["memos_cleared"] == 1
+    assert wiped == {101: {"FlagMemo": ""}}
+
+
+def test_clear_flag_keeps_the_memo_while_a_sibling_card_stays_flagged(tmp_path, monkeypatch):
+    # --flag narrows the clear to one card; the note's other card is still flagged, so the
+    # triage is still open and the memo stays readable for the next rescue session.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([
+        flag_card(11, 101, 1, "妥協(だきょう)", memo="오독 메모"),
+        flag_card(12, 101, 7, "妥協(だきょう)", deck="Japanese::Listening", memo="오독 메모")])
+    patch_anki(monkeypatch, fake)
+    calls = []
+    monkeypatch.setattr(anki_connector, "update_note_fields",
+                        lambda nid, fields: calls.append(nid))
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], flag=1, confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 1
+    assert resp["memos_cleared"] == 0 and calls == []
+    assert state == {11: 0, 12: 7}
+
+
+def test_clear_flag_dry_run_reports_memos_without_wiping(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([flag_card(11, 101, 1, "妥協(だきょう)", memo="오독 메모")])
+    patch_anki(monkeypatch, fake)
+    calls = []
+    monkeypatch.setattr(anki_connector, "update_note_fields",
+                        lambda nid, fields: calls.append(nid))
+
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], db_path=db)
+    assert code == 0 and resp["status"] == "planned" and calls == []
+    assert "memo(s) would be wiped" in resp["message"]
+    assert resp["cards"][0]["memo"] == "오독 메모"      # the dry run shows what rides along
+
+
+def test_clear_flag_reports_a_failed_memo_wipe_without_failing(tmp_path, monkeypatch):
+    # The flag write already landed and verified when the wipe runs — a wipe error is
+    # reported for manual cleanup, never turned into a failure of the whole clear.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+    fake, state = flag_invoke([flag_card(11, 101, 1, "妥協(だきょう)", memo="오독 메모")])
+    patch_anki(monkeypatch, fake)
+
+    def boom(nid, fields):
+        raise Exception("connection dropped")
+
+    monkeypatch.setattr(anki_connector, "update_note_fields", boom)
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 1
+    assert resp["memos_cleared"] == 0 and resp["memo_wipe_failed"] == [101]
+    assert "failed to wipe" in resp["message"]
+
+
+def test_clear_flag_keeps_the_memo_when_the_flag_write_did_not_take(tmp_path, monkeypatch):
+    # The wipe set is computed from the VERIFIED clears: a write AnkiConnect claimed but the
+    # re-read disproved leaves the note flagged, so its memo must survive too.
+    monkeypatch.setattr(config, "ANKI_ENABLED", True)
+    db = str(tmp_path / "t.db")
+    seed_card(db, "妥協(だきょう)", note_id=101)
+
+    def stubborn(action, **params):
+        if action == "findCards":
+            return [11]
+        if action == "cardsInfo":
+            return [flag_card(11, 101, 1, "妥協(だきょう)", memo="오독 메모")]
+        if action == "setSpecificValueOfCard":
+            return [True]                       # the lie again — the flag never moves
+        raise AssertionError(f"unexpected action {action}")
+
+    patch_anki(monkeypatch, stubborn)
+    calls = []
+    monkeypatch.setattr(anki_connector, "update_note_fields",
+                        lambda nid, fields: calls.append(nid))
+    resp, code = cmd_clear_flags(root_ids=["妥協(だきょう)"], confirm=True, db_path=db)
+    assert code == 0 and resp["cleared"] == 0 and resp["still_flagged"] == [11]
+    assert resp["memos_cleared"] == 0 and calls == []
 
 
 def test_triage_still_runs_when_only_the_push_path_is_closed(tmp_path, monkeypatch):

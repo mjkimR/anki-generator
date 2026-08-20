@@ -41,10 +41,19 @@ default 4), leeches first, joined to their local content (`front`, `back_reading
 `is_leech`). `anki_online: false` with a message just means Anki is closed or this is a
 generation-only machine — that's normal; there's simply nothing to triage right now.
 
-**Flag 7 (purple) is not in the queue on purpose.** The user reserves it for cards with a
-*pipeline* defect — bad TTS on an otherwise sound card, say — not a study failure. Never
-diagnose one as a rescue case; if the user asks about purple cards, treat the underlying
-defect and clear the flag with `rescue clear-flag <root_id> --flag 7 --confirm`.
+An item may also carry a **`memo`** — the user's own note, typed into the note's FlagMemo
+field in Anki while flagging the card ("why this one failed"). It is first-hand evidence
+from the moment of failure: when present, start the diagnosis from it.
+
+**Flag 7 (purple) is not in the queue by default, on purpose.** It is the user's
+**special-case marker** — "handle this out of band" — and what each purple card means is
+the user's call, said per card in its FlagMemo: a pipeline defect (bad TTS), a study
+question they want researched, anything. Never assume which, and never pull one into the
+normal diagnosis loop uninvited — a special case filed as a study-failure diagnosis would
+poison `card_feedback`. When the user asks about their purple cards, run
+`rescue queue --include-special` (they arrive with `flags: [7]` and their `memo`), do what
+the memo says, and close with `rescue clear-flag <root_id> --flag 7 --confirm`; `capture`
+only if it turned out to be a genuine study-failure diagnosis.
 
 Work **one card at a time**, top of the queue first.
 
@@ -110,6 +119,11 @@ flagged card that already has a `card_feedback` row, for closing out a whole ses
 Clearing is **per card, not per note**: one note carries a recognition and a recall card, and
 only the one the user actually flagged is cleared. The response reports the card/note split,
 and re-reads the cards to confirm the write — `cleared` counts verified clears only.
+
+The user's **memo travels with the flag**: once a note's last flag is verified cleared, its
+FlagMemo field is wiped too (`memos_cleared` in the response; the dry run says how many
+would go). A note that still has another flagged card keeps its memo — the triage is still
+open. Never wipe or edit the FlagMemo field yourself; the command owns that lifecycle.
 
 Then return to Step 1 for the next card.
 
