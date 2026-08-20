@@ -37,6 +37,13 @@ The model contains:
   fallback) plus a priority badge (`HyogaiPriority`). Push also appends a hierarchical
   `표외한자::<priority>` tag from `hyogai_priority` for search/filtering.
 
+The model also carries `FlagMemo`, rendered by no template (like `RootId`): the user's
+transient triage note, typed in Anki while flagging a struggling card. It is deliberately
+Anki-only working state — push always writes it empty, it is never stored in the database
+or the JSONL mirror, and the rescue driver surfaces it (`rescue queue`) and wipes it
+together with the note's last flag (`rescue clear-flag`). The name ties it to the flag on
+purpose; it is not a general-purpose notes field.
+
 AnkiConnect has no per-template deck override, so `route_listening_cards()` moves Listening
 cards into `ANKI_LISTENING_DECK`, and `route_hyogai_cards()` moves Hyogai cards into the
 single `ANKI_HYOGAI_DECK` (its one new-cards/day limit throttles the familiarization

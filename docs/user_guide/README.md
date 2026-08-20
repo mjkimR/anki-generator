@@ -116,6 +116,12 @@ queue (`rescue queue`), shows one struggling card with its Anki signals (lapses,
 and its content, and helps you name **why** it fails (reading, meaning, an unknown word in the
 example, a look-alike, the sentence itself).
 
+While flagging a card in Anki you can also jot the reason into the note's **FlagMemo** field
+(edit the note, bottom field — it never shows on the card itself). The rescue queue hands
+that memo to the agent as your first-hand account of the failure, and it is wiped
+automatically when the flag comes off — a scratch note tied to the flag, not a
+general-purpose notes field.
+
 For each card you pick **one** treatment and the agent runs it:
 
 - **Add a reading tip / fix a field** — edited in place: the DB, the `data/` mirror, and the
@@ -125,12 +131,14 @@ For each card you pick **one** treatment and the agent runs it:
   handed off to the card-generation / legacy skills.
 - **Retire** the card — suspended + tagged, fully reversible (never deletion).
 
-Once a card is treated the agent clears its flag, so it stops coming back in the next queue.
+Once a card is treated the agent clears its flag, so it stops coming back in the next queue —
+and once a note carries no flag any more, its FlagMemo field is emptied along with it.
 
 Whatever you decide is recorded (the *feedback harvest*), so over time the recurring kinds of
-failure become visible. One flag is left alone: **purple (flag 7)** never enters the queue, so
-you can use it as your own marker for cards with a pipeline problem — bad audio, say — rather
-than a memory problem. Run rescue with Anki open: the queue needs it (it comes back empty when
+failure become visible. One flag is left alone: **purple (flag 7)** never enters the queue on
+its own, so it works as your personal special-case marker — jot what it means into FlagMemo
+(a pipeline problem like bad audio, a question you want researched, anything) and ask the
+agent to look at your purple cards when you're ready. Run rescue with Anki open: the queue needs it (it comes back empty when
 Anki is closed), and editing a card that's already in Anki needs Anki reachable so the change
 actually lands there — otherwise the edit is refused with nothing changed (a card not yet pushed
 can be edited offline and rides the next push). Ends the same way as every session: commit `data/`.

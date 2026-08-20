@@ -82,7 +82,9 @@ the practice driver.
 a guided per-card diagnosis, then applies one treatment. Sourcing is read-only and best-effort:
 it queries Anki for struggling notes, joins them back to local content by note id (falling back
 to the reserved RootId field when no local row exists yet), and degrades to an empty queue when
-Anki is closed. The diagnosed failure category and the chosen action are recorded into
+Anki is closed. A queue item also carries the note's `FlagMemo` field when the user filled it
+in — their own note, written at review time, on why they flagged the card — as first-hand
+diagnosis evidence. The diagnosed failure category and the chosen action are recorded into
 `card_feedback` — the harvest — so recurring weaknesses become visible over time.
 
 Two treatments are mechanical: an in-place field edit (DB + mirror via `rewrite_cards`, plus a
@@ -94,12 +96,18 @@ action was taken. See [ADR-0012](../decisions/0012-in-place-card-edits.md).
 Clearing a flag closes the loop: a treated card keeps resurfacing until the signal the queue
 selected on is retired. `clear-flag` is a dry run by default and works **per card**, since one
 note's recognition and recall cards carry their own flags and only the flagged one was
-triaged. Sourcing deliberately covers flags 1-6 only — flag 7 is the user's out-of-band marker
-for a pipeline defect (bad TTS on an otherwise sound card) rather than a study failure, so it
-never enters the diagnosis loop, though `clear-flag` still clears it when named. The write goes
+triaged. Sourcing deliberately covers flags 1-6 by default — flag 7 is the user's out-of-band
+special-case marker, whose per-card meaning travels in `FlagMemo` (a pipeline defect, a study
+question — the user's call), so it never enters the diagnosis loop uninvited: the queue
+sources it only on explicit request (`--include-special`), and `clear-flag` clears it when
+named. The write goes
 through `anki_connector.clear_card_flags`, which sets the raw `flags` column (AnkiConnect
 exposes no flag action), preserves the non-flag bits, and re-reads the cards afterwards because
-a wrong value type is accepted with a cheerful `[True]` and changes nothing.
+a wrong value type is accepted with a cheerful `[True]` and changes nothing. The triage memo
+shares the flag's lifecycle: once a note's last flag is *verified* cleared, its `FlagMemo`
+field is wiped too (best-effort past that point — a failed wipe is reported, never fatal),
+while a note that still carries a flagged card keeps its memo because the triage is still
+open.
 
 Command syntax and session recipes belong in `anki-gen --help` and the corresponding
 `SKILL.md`, not in this architecture document.
